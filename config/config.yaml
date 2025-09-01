@@ -1,0 +1,38 @@
+# Configuration file for data science project
+
+# Data paths
+data:
+  raw: "data/raw"
+  processed: "data/processed"
+  external: "data/external"
+
+# Model parameters
+model:
+  random_state: 42
+  test_size: 0.2
+  validation_size: 0.2
+  cv_folds: 5
+
+# Feature engineering
+features:
+  categorical_encoding: "onehot"  # onehot, label, target
+  numerical_scaling: "standard"   # standard, minmax, robust
+  handle_missing: "drop"          # drop, impute, flag
+
+# Training parameters
+training:
+  n_estimators: 100
+  max_depth: 10
+  learning_rate: 0.1
+  early_stopping_rounds: 10
+
+# Output paths
+output:
+  models: "reports/models"
+  figures: "reports/figures"
+  logs: "logs"
+
+# Logging
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"

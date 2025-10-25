@@ -1,7 +1,7 @@
 {
     "_meta": {
         "hash": {
-            "sha256": "9988a2e31a1db275a8062c642824f922e5a10cbc45cb929ad6676d694701a770"
+            "sha256": "0c692cd5e864c4d0e34b6ad4d5e52694a688fad64fc998ebc91b0c3ee5a5585d"
         },
         "pipfile-spec": 6,
         "requires": {
@@ -1765,6 +1765,13 @@
             "index": "pypi",
             "markers": "python_version >= '3.9'",
             "version": "==2.3.2"
+        },
+        "pandas-ta": {
+            "hashes": [
+                "sha256:0fa35aec831d2815ea30b871688a8d20a76b288a7be2d26cc00c35cd8c09a993"
+            ],
+            "index": "pypi",
+            "version": "==0.3.14b0"
         },
         "pandocfilters": {
             "hashes": [

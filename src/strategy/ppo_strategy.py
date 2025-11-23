@@ -248,11 +248,9 @@ class PPOStrategy:
                 weights_dict[asset] = weight
         
         # Cash weight is the last element
-        cash_weight = float(action[-1])
-        if cash_weight > 1e-6:
-            # Note: TargetPortfolio doesn't have a cash field, but we can
-            # represent it as ensuring weights sum to <= 1.0
-            # The remaining weight (1.0 - sum(weights)) is implicitly cash
+        # Note: TargetPortfolio doesn't have a cash field, but we can
+        # represent it as ensuring weights sum to <= 1.0
+        # The remaining weight (1.0 - sum(weights)) is implicitly cash
         
         # Construct and return TargetPortfolio
         try:

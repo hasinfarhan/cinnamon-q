@@ -157,6 +157,7 @@ def fetch_price_history(symbol: str, alpaca_headers: dict, alpaca_data_url: str,
         
         # Use Alpaca Data API for historical crypto bars
         # Endpoint: /v1beta3/crypto/us/bars (Data API, not Trading API)
+        # Note: "us" in the path represents the feed, no need for feed parameter
         url = f"{alpaca_data_url}/v1beta3/crypto/us/bars"
         params = {
             "symbols": alpaca_symbol,  # Comma-separated list of symbols
@@ -164,7 +165,6 @@ def fetch_price_history(symbol: str, alpaca_headers: dict, alpaca_data_url: str,
             "start": start_date.strftime("%Y-%m-%dT%H:%M:%S-00:00"),
             "end": end_date.strftime("%Y-%m-%dT%H:%M:%S-00:00"),
             "limit": 10000,  # Max per request
-            "feed": "us"  # Required: US crypto feed
         }
         
         all_bars = []

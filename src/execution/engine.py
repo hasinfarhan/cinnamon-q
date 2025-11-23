@@ -189,8 +189,9 @@ class TradingEngine:
             target_weight = target.weights.get(ticker, 0.0)
             target_equity = state.total_equity * target_weight
             
-            # Get current dollar value
+            # Get current dollar value and quantity
             current_equity = state.valuations.get(ticker, 0.0)
+            current_qty = state.positions.get(ticker, 0.0)
             
             # Calculate difference
             diff = target_equity - current_equity
@@ -204,17 +205,32 @@ class TradingEngine:
             
             # Step E: Create orders based on difference
             if diff < 0:
-                # Need to sell: diff is negative, so use absolute value
-                sell_order = TradeOrder(
-                    symbol=ticker,
-                    side=OrderSide.SELL,
-                    notional=abs(diff),
-                    order_type=OrderType.MARKET,
-                    client_order_id=client_order_id
-                )
+                # Need to sell: diff is negative
+                # FIX: Handle Full Exit (Sell Everything) - Use QTY to avoid price slippage
+                # When target_weight is 0.0, we want to close the position completely
+                # Using qty ensures we sell exactly what we have, regardless of price movements
+                if target_weight == 0.0:
+                    print(f"📉 Closing position for {ticker} completely (target weight: 0.0)")
+                    sell_order = TradeOrder(
+                        symbol=ticker,
+                        side=OrderSide.SELL,
+                        qty=abs(current_qty),  # Sell exact quantity, not dollar amount
+                        order_type=OrderType.MARKET,
+                        client_order_id=client_order_id
+                    )
+                else:
+                    # Partial Sell (Rebalance) - Use Notional
+                    sell_order = TradeOrder(
+                        symbol=ticker,
+                        side=OrderSide.SELL,
+                        notional=abs(diff),
+                        order_type=OrderType.MARKET,
+                        client_order_id=client_order_id
+                    )
                 sells.append(sell_order)
             elif diff > 0:
                 # Need to buy: diff is positive
+                # Buys are always Notional (Dollar based)
                 buy_order = TradeOrder(
                     symbol=ticker,
                     side=OrderSide.BUY,

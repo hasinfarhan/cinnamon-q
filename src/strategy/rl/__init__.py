@@ -6,6 +6,7 @@ for training the Hierarchical Deep Reinforcement Learning agent.
 """
 
 from .env import CryptoDeepEnv
+from .fast_env import FastCryptoEnv
 
-__all__ = ["CryptoDeepEnv"]
+__all__ = ["CryptoDeepEnv", "FastCryptoEnv"]
 

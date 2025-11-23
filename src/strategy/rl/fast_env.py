@@ -1,0 +1,312 @@
+"""
+Fast Crypto RL Environment - Optimized Numpy Version
+
+This is a high-performance version of CryptoDeepEnv that uses Numpy arrays
+instead of Pandas DataFrames for blazingly fast stepping. Designed for
+parallel training with SubprocVecEnv.
+"""
+
+from collections import deque
+from pathlib import Path
+from typing import Dict, Optional, Tuple
+
+import gymnasium as gym
+import numpy as np
+import pandas as pd
+from gymnasium import spaces
+
+
+class FastCryptoEnv(gym.Env):
+    """
+    Highly optimized crypto trading environment using Numpy arrays.
+    
+    This version pre-processes all data into float32 arrays for maximum
+    performance during training. Designed for parallel execution.
+    """
+    
+    metadata = {"render_modes": ["human"], "render_fps": 4}
+    
+    def __init__(
+        self,
+        data_path: Optional[Path] = None,
+        lookback_window: int = 30,
+        initial_cash: float = 100000.0
+    ):
+        """
+        Initialize the fast crypto trading environment.
+        
+        Args:
+            data_path: Path to crypto_training_data.parquet
+            lookback_window: Number of days for Sortino calculation
+            initial_cash: Starting portfolio value
+        """
+        super().__init__()
+        
+        # Set data path
+        if data_path is None:
+            project_root = Path(__file__).parent.parent.parent.parent
+            data_path = project_root / "data" / "processed" / "crypto_training_data.parquet"
+        
+        self.data_path = data_path
+        self.lookback_window = lookback_window
+        self.initial_cash = initial_cash
+        
+        # Load and preprocess data into numpy arrays
+        print("📊 Loading and optimizing crypto training data...")
+        self._load_and_optimize()
+        
+        # Get unique assets
+        self.assets = sorted(self.asset_list)
+        self.n_assets = len(self.assets)
+        
+        print(f"✓ Optimized {self.n_steps} steps for {self.n_assets} assets: {self.assets}")
+        
+        # Define action space: Portfolio weights (assets + cash)
+        self.action_space = spaces.Box(
+            low=0.0,
+            high=1.0,
+            shape=(self.n_assets + 1,),
+            dtype=np.float32
+        )
+        
+        # Define observation space
+        # Features per asset: [return, volatility, commit_count_norm, utility_score]
+        # Plus: portfolio_value_norm, cash_weight
+        n_features_per_asset = 4
+        n_obs_features = (self.n_assets * n_features_per_asset) + 2
+        
+        self.observation_space = spaces.Box(
+            low=-np.inf,
+            high=np.inf,
+            shape=(n_obs_features,),
+            dtype=np.float32
+        )
+        
+        # Initialize episode state
+        self.current_step = 0
+        self.returns_history = deque(maxlen=lookback_window)
+        self.portfolio_value = initial_cash
+        self.current_weights = np.zeros(self.n_assets + 1, dtype=np.float32)
+        self.current_weights[-1] = 1.0  # Start with 100% cash
+    
+    def _load_and_optimize(self):
+        """
+        Load data and convert to optimized numpy arrays.
+        
+        This pre-processes everything into float32 arrays for maximum speed.
+        """
+        if not self.data_path.exists():
+            raise FileNotFoundError(
+                f"Dataset not found: {self.data_path}\n"
+                "Please run scripts/09_generate_sentiment.py first."
+            )
+        
+        df = pd.read_parquet(self.data_path)
+        df = df.sort_values(['timestamp', 'ticker']).reset_index(drop=True)
+        
+        # Get unique assets and timestamps
+        self.asset_list = sorted(df['ticker'].unique().tolist())
+        self.timestamps = sorted(df['timestamp'].unique())
+        self.n_steps = len(self.timestamps)
+        n_assets = len(self.asset_list)
+        
+        # Pre-allocate numpy arrays for maximum speed
+        # Shape: [n_steps, n_assets, n_features]
+        # Features: [returns, volatility, commit_count_norm, utility_score]
+        n_features = 4
+        
+        # Data arrays
+        self.returns_array = np.zeros((self.n_steps, n_assets), dtype=np.float32)
+        self.volatility_array = np.zeros((self.n_steps, n_assets), dtype=np.float32)
+        self.commit_array = np.zeros((self.n_steps, n_assets), dtype=np.float32)
+        self.utility_array = np.zeros((self.n_steps, n_assets), dtype=np.float32)
+        
+        # Price arrays for portfolio return calculation
+        self.price_array = np.zeros((self.n_steps, n_assets), dtype=np.float32)
+        
+        # Process each asset
+        for asset_idx, asset in enumerate(self.asset_list):
+            asset_data = df[df['ticker'] == asset].sort_values('timestamp').reset_index(drop=True)
+            
+            # Calculate returns
+            asset_data['returns'] = asset_data['close'].pct_change().fillna(0.0)
+            
+            # Calculate volatility (rolling std)
+            asset_data['volatility'] = asset_data['returns'].rolling(window=7, min_periods=1).std().fillna(0.0)
+            
+            # Normalize commit_count
+            commit_min = asset_data['commit_count_4_weeks'].min()
+            commit_max = asset_data['commit_count_4_weeks'].max()
+            if commit_max > commit_min:
+                asset_data['commit_count_norm'] = (
+                    (asset_data['commit_count_4_weeks'] - commit_min) / (commit_max - commit_min)
+                )
+            else:
+                asset_data['commit_count_norm'] = 0.5
+            
+            # Ensure utility_score is valid
+            asset_data['utility_score'] = asset_data['utility_score'].fillna(0.5).clip(0.0, 1.0)
+            
+            # Map to timestamps
+            for ts_idx, timestamp in enumerate(self.timestamps):
+                ts_data = asset_data[asset_data['timestamp'] == timestamp]
+                if len(ts_data) > 0:
+                    row = ts_data.iloc[0]
+                    self.returns_array[ts_idx, asset_idx] = float(row['returns'])
+                    self.volatility_array[ts_idx, asset_idx] = float(row['volatility'])
+                    self.commit_array[ts_idx, asset_idx] = float(row['commit_count_norm'])
+                    self.utility_array[ts_idx, asset_idx] = float(row['utility_score'])
+                    self.price_array[ts_idx, asset_idx] = float(row['close'])
+    
+    def _get_observation(self) -> np.ndarray:
+        """
+        Construct observation vector using fast numpy operations.
+        
+        Returns:
+            Observation vector as float32 numpy array
+        """
+        if self.current_step >= self.n_steps:
+            return np.zeros(self.observation_space.shape, dtype=np.float32)
+        
+        obs = np.zeros(self.observation_space.shape, dtype=np.float32)
+        idx = 0
+        
+        # For each asset, extract features (vectorized)
+        for asset_idx in range(self.n_assets):
+            obs[idx] = self.returns_array[self.current_step, asset_idx]
+            obs[idx + 1] = self.volatility_array[self.current_step, asset_idx]
+            obs[idx + 2] = self.commit_array[self.current_step, asset_idx]
+            obs[idx + 3] = self.utility_array[self.current_step, asset_idx]
+            idx += 4
+        
+        # Add portfolio value (normalized)
+        obs[idx] = self.portfolio_value / self.initial_cash
+        
+        # Add current cash weight
+        obs[idx + 1] = self.current_weights[-1]
+        
+        return obs
+    
+    def reset(
+        self,
+        seed: Optional[int] = None,
+        options: Optional[Dict] = None
+    ) -> Tuple[np.ndarray, Dict]:
+        """Reset environment to initial state."""
+        super().reset(seed=seed)
+        
+        # Random start to prevent overfitting (but ensure we have enough history)
+        if self.n_steps > 2000:
+            self.current_step = np.random.randint(
+                self.lookback_window,
+                self.n_steps - 1000
+            )
+        else:
+            self.current_step = self.lookback_window
+        
+        # Reset episode state
+        self.returns_history.clear()
+        self.portfolio_value = self.initial_cash
+        self.current_weights = np.zeros(self.n_assets + 1, dtype=np.float32)
+        self.current_weights[-1] = 1.0
+        
+        observation = self._get_observation()
+        info = {
+            'portfolio_value': float(self.portfolio_value),
+            'step': int(self.current_step)
+        }
+        
+        return observation, info
+    
+    def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict]:
+        """
+        Execute one step using optimized numpy operations.
+        
+        Args:
+            action: Portfolio weights
+        
+        Returns:
+            Standard gymnasium 5-tuple
+        """
+        # Normalize action (fast numpy)
+        action = np.clip(action, 0.0, 1.0)
+        action_sum = np.sum(action)
+        if action_sum > 1e-8:
+            weights = (action / action_sum).astype(np.float32)
+        else:
+            weights = np.zeros(self.n_assets + 1, dtype=np.float32)
+            weights[-1] = 1.0
+        
+        self.current_weights = weights
+        
+        # Check termination
+        if self.current_step >= self.n_steps - 1:
+            observation = self._get_observation()
+            reward = 0.0
+            terminated = True
+            truncated = False
+            info = {
+                'portfolio_value': float(self.portfolio_value),
+                'step': int(self.current_step),
+                'final_return': float((self.portfolio_value / self.initial_cash) - 1.0)
+            }
+            return observation, reward, terminated, truncated, info
+        
+        # Calculate portfolio return (vectorized numpy)
+        if self.current_step < self.n_steps - 1:
+            current_prices = self.price_array[self.current_step, :]
+            next_prices = self.price_array[self.current_step + 1, :]
+            
+            # Avoid division by zero
+            mask = current_prices > 1e-8
+            asset_returns = np.zeros(self.n_assets, dtype=np.float32)
+            asset_returns[mask] = (next_prices[mask] / current_prices[mask]) - 1.0
+            
+            # Portfolio return = dot product of weights and returns
+            portfolio_return = np.dot(weights[:-1], asset_returns)  # Exclude cash weight
+        else:
+            portfolio_return = 0.0
+        
+        # Update portfolio value
+        self.portfolio_value *= (1.0 + portfolio_return)
+        
+        # Track returns history
+        self.returns_history.append(portfolio_return)
+        
+        # Calculate reward
+        if len(self.returns_history) < self.lookback_window:
+            reward = float(portfolio_return)
+        else:
+            # Calculate Sortino Ratio
+            returns_array = np.array(list(self.returns_history), dtype=np.float32)
+            mean_return = np.mean(returns_array)
+            
+            # Downside deviation
+            downside_returns = returns_array[returns_array < 0]
+            
+            if len(downside_returns) > 0 and np.std(downside_returns) > 1e-8:
+                downside_dev = np.std(downside_returns)
+                sortino_ratio = mean_return / downside_dev
+                reward = float(sortino_ratio)
+            else:
+                reward = float(mean_return)
+        
+        # Move to next step
+        self.current_step += 1
+        
+        # Get next observation
+        observation = self._get_observation()
+        
+        # Check termination
+        terminated = self.current_step >= self.n_steps - 1
+        truncated = False
+        
+        info = {
+            'portfolio_value': float(self.portfolio_value),
+            'portfolio_return': float(portfolio_return),
+            'step': int(self.current_step),
+            'sortino_ratio': reward if len(self.returns_history) >= self.lookback_window else None
+        }
+        
+        return observation, reward, terminated, truncated, info
+

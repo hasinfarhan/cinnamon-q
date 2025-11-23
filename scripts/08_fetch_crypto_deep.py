@@ -154,24 +154,26 @@ def fetch_price_history(symbol: str, alpaca_headers: dict, alpaca_base_url: str,
         print(f"  Fetching {years} years of 1Hour bars for {symbol}...")
         
         # Use Alpaca REST API directly via requests
-        url = f"{alpaca_base_url}/v2/stocks/{alpaca_symbol}/bars"
+        # Crypto API endpoint: /v1beta1/crypto/bars (not /v2/stocks/)
+        url = f"{alpaca_base_url}/v1beta1/crypto/bars"
         params = {
-            "symbols": alpaca_symbol,
+            "symbols": alpaca_symbol,  # Comma-separated list of symbols
             "timeframe": "1Hour",
             "start": start_date.strftime("%Y-%m-%dT%H:%M:%S-00:00"),
             "end": end_date.strftime("%Y-%m-%dT%H:%M:%S-00:00"),
             "limit": 10000,  # Max per request
-            "page_token": None
         }
         
         all_bars = []
         page_token = None
         
         while True:
+            # Add page_token to params if we have one
+            current_params = params.copy()
             if page_token:
-                params["page_token"] = page_token
+                current_params["page_token"] = page_token
             
-            response = requests.get(url, headers=alpaca_headers, params=params)
+            response = requests.get(url, headers=alpaca_headers, params=current_params)
             response.raise_for_status()
             
             data = response.json()

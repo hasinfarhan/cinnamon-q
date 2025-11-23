@@ -177,9 +177,9 @@ class AlpacaProvider(ExecutionProvider):
                 "symbol": response.symbol,
                 "side": response.side,
                 "order_type": response.order_type,
-                "qty": float(response.qty) if hasattr(response, 'qty') else None,
+                "qty": float(response.qty) if hasattr(response, 'qty') and response.qty is not None else None,
                 "status": response.status,
-                "filled_qty": float(response.filled_qty) if hasattr(response, 'filled_qty') else 0.0,
+                "filled_qty": float(response.filled_qty) if hasattr(response, 'filled_qty') and response.filled_qty is not None else 0.0,
             }
             
             print(f"✓ Order submitted successfully. Order ID: {response.id}, Status: {response.status}")

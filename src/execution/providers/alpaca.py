@@ -208,9 +208,14 @@ class AlpacaProvider(ExecutionProvider):
             is_crypto = '/' in order.symbol or order.symbol.endswith('USD')
             time_in_force = 'gtc' if is_crypto else 'day'
             
-            # ROUNDING FIX: Round notional/qty to 2 decimals
-            # Alpaca rejects high precision floats (e.g., $58683.257634 -> $58683.25)
-            qty = round(order.qty, 2) if order.qty is not None else None
+            # ROUNDING FIX v2:
+            # 1. Notional (Dollars): Round to 2 decimals (Alpaca requirement)
+            #    Alpaca rejects high precision floats for dollar amounts
+            # 2. Quantity (Shares/Coins): Do NOT round
+            #    Alpaca accepts high precision (up to 9 decimals for crypto)
+            #    Rounding qty can cause "insufficient balance" errors when selling
+            #    Example: 20.776191583 ETH rounded to 20.78 tries to sell more than owned
+            qty = order.qty  # Pass raw float - Alpaca handles precision
             notional = round(order.notional, 2) if order.notional is not None else None
             
             # Build order parameters

@@ -150,8 +150,9 @@ def fetch_price_history(symbol: str, alpaca_headers: dict, alpaca_data_url: str,
         end_date = datetime.now()
         start_date = end_date - timedelta(days=years * 365)
         
-        # Convert symbol format: "BTC/USD" -> "BTCUSD" for Alpaca
-        alpaca_symbol = symbol.replace("/", "")
+        # Alpaca Data API requires symbols in format "BTC/USD" (with slash)
+        # Keep the original symbol format - don't remove the slash
+        alpaca_symbol = symbol  # Already in "BTC/USD" format
         
         print(f"  Fetching {years} years of 1Hour bars for {symbol}...")
         
@@ -160,7 +161,7 @@ def fetch_price_history(symbol: str, alpaca_headers: dict, alpaca_data_url: str,
         # Note: "us" in the path represents the feed, no need for feed parameter
         url = f"{alpaca_data_url}/v1beta3/crypto/us/bars"
         params = {
-            "symbols": alpaca_symbol,  # Comma-separated list of symbols
+            "symbols": alpaca_symbol,  # Format: "BTC/USD" (with slash, comma-separated for multiple)
             "timeframe": "1Hour",
             "start": start_date.strftime("%Y-%m-%dT%H:%M:%S-00:00"),
             "end": end_date.strftime("%Y-%m-%dT%H:%M:%S-00:00"),
@@ -186,7 +187,7 @@ def fetch_price_history(symbol: str, alpaca_headers: dict, alpaca_data_url: str,
             response.raise_for_status()
             
             data = response.json()
-            # Crypto API returns bars in format: {"bars": {"BTCUSD": [...]}}
+            # Crypto API returns bars in format: {"bars": {"BTC/USD": [...]}}
             bars_dict = data.get("bars", {})
             bars = bars_dict.get(alpaca_symbol, [])
             

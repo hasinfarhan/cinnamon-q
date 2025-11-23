@@ -23,7 +23,7 @@ sys.path.insert(0, str(project_root / "src"))
 import torch
 import numpy as np
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize, DummyVecEnv
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 from stable_baselines3.common.monitor import Monitor
@@ -193,14 +193,25 @@ def main():
     
     # Evaluation callback: Track best model
     # Create a separate eval environment (single process for consistency)
-    eval_env = FastCryptoEnv(data_path=data_path)
-    eval_env = Monitor(eval_env, str(log_dir / "eval"))
-    eval_env = VecNormalize(
-        VecNormalize.load(str(log_dir / "vec_normalize.pkl"), eval_env) if (log_dir / "vec_normalize.pkl").exists() else VecNormalize(eval_env),
-        norm_obs=True,
-        norm_reward=True,
-        training=False
-    )
+    # Wrap in DummyVecEnv first (VecNormalize requires a VecEnv)
+    def make_eval_env():
+        env = FastCryptoEnv(data_path=data_path)
+        env = Monitor(env, str(log_dir / "eval"))
+        return env
+    
+    eval_env = DummyVecEnv([make_eval_env])
+    
+    # Load normalization stats if they exist, otherwise create new
+    if (log_dir / "vec_normalize.pkl").exists():
+        eval_env = VecNormalize.load(str(log_dir / "vec_normalize.pkl"), eval_env)
+        eval_env.training = False  # Disable training mode for evaluation
+    else:
+        eval_env = VecNormalize(
+            eval_env,
+            norm_obs=True,
+            norm_reward=True,
+            training=False
+        )
     
     eval_callback = EvalCallback(
         eval_env,
@@ -265,9 +276,10 @@ def main():
     
     # Load normalization for consistent testing
     test_env = FastCryptoEnv(data_path=data_path)
+    test_env = DummyVecEnv([lambda: test_env])
     test_env = VecNormalize.load(str(vec_normalize_path), test_env)
     
-    obs, info = test_env.reset()
+    obs = test_env.reset()
     
     print("  Sample predictions (first 5 steps):")
     for i in range(5):
@@ -284,9 +296,9 @@ def main():
         print(f"      Portfolio weights: {normalized_weights}")
         print(f"      Cash weight: {normalized_weights[-1]:.3f}")
         
-        obs, reward, terminated, truncated, info = test_env.step(action)
+        obs, reward, done, info = test_env.step(action)
         
-        if terminated or truncated:
+        if done[0]:  # DummyVecEnv returns done as array
             break
     
     print()

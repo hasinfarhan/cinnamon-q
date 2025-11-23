@@ -6,10 +6,10 @@ using the Factory Pattern to select the appropriate broker provider.
 """
 
 import uuid
-from typing import Dict, Optional
+from typing import Optional
 
 from .interface import ExecutionProvider
-from .models import OrderSide, OrderType, TradeOrder
+from .models import OrderSide, OrderType, PortfolioState, TradeOrder
 from .providers.alpaca import AlpacaProvider
 
 
@@ -55,23 +55,19 @@ class TradingEngine:
         else:
             raise ValueError(f"Unsupported provider: {provider_name}")
     
-    def get_portfolio_state(self) -> Dict:
+    def get_portfolio_state(self) -> PortfolioState:
         """
-        Get the current portfolio state including cash and positions.
+        Get the current portfolio state including cash, total equity, and positions.
         
         Returns:
-            Dict: Dictionary containing:
-                - 'cash': Available cash balance (float)
-                - 'positions': Dictionary mapping symbols to quantities (Dict[str, float])
+            PortfolioState: Validated Pydantic model containing:
+                - cash: Available cash balance
+                - total_equity: Total portfolio value
+                - positions: Dictionary mapping symbols to quantities
+                - timestamp: When the snapshot was taken
         """
         try:
-            cash = self.provider.get_cash_balance()
-            positions = self.provider.get_positions()
-            
-            return {
-                "cash": cash,
-                "positions": positions
-            }
+            return self.provider.get_state()
         except Exception as e:
             print(f"✗ Error getting portfolio state: {str(e)}")
             raise
@@ -120,14 +116,14 @@ class TradingEngine:
             ValueError: If no position exists for the symbol
             Exception: If order execution fails
         """
-        # Get current positions
-        positions = self.provider.get_positions()
+        # Get current portfolio state
+        state = self.provider.get_state()
         
         # Check if position exists
-        if symbol not in positions:
+        if symbol not in state.positions:
             raise ValueError(f"No position found for symbol: {symbol}")
         
-        current_qty = positions[symbol]
+        current_qty = state.positions[symbol]
         
         if current_qty == 0:
             raise ValueError(f"Position quantity is zero for symbol: {symbol}")

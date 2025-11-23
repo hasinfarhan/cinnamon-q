@@ -5,13 +5,14 @@ This module implements the ExecutionProvider interface using the Alpaca API.
 """
 
 import os
+from datetime import datetime
 from typing import Dict
 
 import alpaca_trade_api as tradeapi
 from dotenv import load_dotenv
 
 from ..interface import ExecutionProvider
-from ..models import OrderSide, OrderType, TradeOrder
+from ..models import OrderSide, OrderType, PortfolioState, TradeOrder
 
 # Load environment variables
 load_dotenv()
@@ -58,6 +59,46 @@ class AlpacaProvider(ExecutionProvider):
         except Exception as e:
             print(f"✗ Failed to connect to Alpaca: {str(e)}")
             return False
+    
+    def get_state(self) -> PortfolioState:
+        """
+        Get the current portfolio state from Alpaca.
+        
+        Returns:
+            PortfolioState: Validated Pydantic model containing cash, total_equity, and positions
+        """
+        try:
+            if not self.api:
+                raise RuntimeError("Not connected to Alpaca. Call connect() first.")
+            
+            # Get account information
+            account = self.api.get_account()
+            
+            # Alpaca API returns values as strings, so we need explicit type conversion
+            cash = float(account.cash)
+            total_equity = float(account.portfolio_value)  # portfolio_value is the total equity
+            
+            # Get positions
+            positions = self.api.list_positions()
+            position_dict: Dict[str, float] = {}
+            
+            for position in positions:
+                symbol = position.symbol
+                # Alpaca returns qty as string, convert to float
+                qty = float(position.qty)
+                position_dict[symbol] = qty
+            
+            # Create and return the validated PortfolioState model
+            # Pydantic will validate that cash and total_equity are >= 0
+            return PortfolioState(
+                timestamp=datetime.now(),
+                cash=cash,
+                total_equity=total_equity,
+                positions=position_dict
+            )
+        except Exception as e:
+            print(f"✗ Error getting portfolio state: {str(e)}")
+            raise
     
     def get_positions(self) -> Dict[str, float]:
         """

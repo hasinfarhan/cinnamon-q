@@ -36,8 +36,9 @@ def main():
         print("Step 2: Getting initial portfolio state...")
         initial_state = engine.get_portfolio_state()
         print(f"✓ Initial Portfolio State:")
-        print(f"  Cash: ${initial_state['cash']:,.2f}")
-        print(f"  Positions: {initial_state['positions']}")
+        print(f"  Cash: ${initial_state.cash:,.2f}")
+        print(f"  Total Equity: ${initial_state.total_equity:,.2f}")
+        print(f"  Positions: {initial_state.positions}")
         print()
         
         # Step 3: Execute test buy order
@@ -55,17 +56,20 @@ def main():
         print("Step 4: Getting final portfolio state...")
         final_state = engine.get_portfolio_state()
         print(f"✓ Final Portfolio State:")
-        print(f"  Cash: ${final_state['cash']:,.2f}")
-        print(f"  Positions: {final_state['positions']}")
+        print(f"  Cash: ${final_state.cash:,.2f}")
+        print(f"  Total Equity: ${final_state.total_equity:,.2f}")
+        print(f"  Positions: {final_state.positions}")
         print()
         
         # Step 5: Compare states
         print("Step 5: Comparing states...")
-        cash_change = final_state['cash'] - initial_state['cash']
+        cash_change = final_state.cash - initial_state.cash
+        equity_change = final_state.total_equity - initial_state.total_equity
         print(f"  Cash change: ${cash_change:,.2f}")
+        print(f"  Equity change: ${equity_change:,.2f}")
         
-        if "AAPL" in final_state['positions']:
-            aapl_position = final_state['positions']['AAPL']
+        if "AAPL" in final_state.positions:
+            aapl_position = final_state.positions["AAPL"]
             print(f"  AAPL position: {aapl_position} shares")
         else:
             print("  AAPL position: 0 shares (order may still be pending)")

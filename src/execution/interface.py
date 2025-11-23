@@ -8,7 +8,7 @@ ensuring broker-agnostic execution capabilities.
 from abc import ABC, abstractmethod
 from typing import Dict
 
-from .models import TradeOrder
+from .models import PortfolioState, TradeOrder
 
 
 class ExecutionProvider(ABC):
@@ -30,9 +30,26 @@ class ExecutionProvider(ABC):
         pass
     
     @abstractmethod
+    def get_state(self) -> PortfolioState:
+        """
+        Get the current portfolio state from the broker.
+        
+        Returns:
+            PortfolioState: Validated Pydantic model containing:
+                - cash: Available cash balance
+                - total_equity: Total portfolio value
+                - positions: Dictionary mapping ticker symbols to quantities
+                - timestamp: When the snapshot was taken
+        """
+        pass
+    
+    @abstractmethod
     def get_positions(self) -> Dict[str, float]:
         """
         Get current positions from the broker.
+        
+        DEPRECATED: Use get_state().positions instead.
+        This method is kept for backward compatibility.
         
         Returns:
             Dict[str, float]: Dictionary mapping ticker symbols to quantities.
@@ -44,6 +61,9 @@ class ExecutionProvider(ABC):
     def get_cash_balance(self) -> float:
         """
         Get the total available cash balance.
+        
+        DEPRECATED: Use get_state().cash instead.
+        This method is kept for backward compatibility.
         
         Returns:
             float: Available cash balance in USD

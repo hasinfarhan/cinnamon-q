@@ -380,7 +380,9 @@ def main():
     
     # Step 3: Combine all data
     print("Step 3: Combining all data...")
-    combined_df = pd.concat(all_data, ignore_index=True)
+    # Filter out empty DataFrames before concatenation to avoid FutureWarning
+    non_empty_data = [df for df in all_data if not df.empty]
+    combined_df = pd.concat(non_empty_data, ignore_index=True)
     
     # Sort by timestamp and ticker
     combined_df = combined_df.sort_values(["timestamp", "ticker"]).reset_index(drop=True)

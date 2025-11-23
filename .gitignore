@@ -166,3 +166,13 @@ logs/
 # Temporary files
 tmp/
 temp/
+
+# Database files (runtime artifacts)
+*.db
+*.sqlite3
+arynosq.db
+
+# Journal files (SQLite creates these temporarily)
+*.db-journal
+*.db-wal
+*.db-shm

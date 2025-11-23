@@ -12,6 +12,12 @@ from .interface import ExecutionProvider
 from .models import OrderSide, OrderType, PortfolioState, TargetPortfolio, TradeOrder
 from .providers.alpaca import AlpacaProvider
 
+# Optional import for database logging
+try:
+    from database.service import DatabaseService
+except ImportError:
+    DatabaseService = None  # type: ignore
+
 # Minimum trade threshold to avoid "dust" trades
 MIN_TRADE_THRESHOLD = 1.0  # dollars
 
@@ -24,17 +30,28 @@ class TradingEngine:
     based on the provider name.
     """
     
-    def __init__(self, provider_name: str = "alpaca"):
+    def __init__(
+        self,
+        provider_name: str = "alpaca",
+        db_service: Optional["DatabaseService"] = None,
+        strategy_name: str = "momentum_bluechip"
+    ):
         """
         Initialize the TradingEngine with a specific provider.
         
         Args:
             provider_name: Name of the provider to use (default: "alpaca")
+            db_service: Optional DatabaseService instance for logging trades.
+                If None, trades will not be logged to the database.
+            strategy_name: Name of the strategy generating trades (default: "momentum_bluechip")
+                Used for trade logging to identify which strategy executed the trade.
             
         Raises:
             ValueError: If provider_name is not supported
         """
         self.provider = self._create_provider(provider_name)
+        self.db = db_service
+        self.strategy_name = strategy_name
         
         # Connect to the provider
         if not self.provider.connect():
@@ -103,7 +120,13 @@ class TradingEngine:
         )
         
         # Execute the order
-        return self.provider.execute_order(order)
+        result = self.provider.execute_order(order)
+        
+        # Log trade to database if db_service is available
+        if self.db is not None and result is not None:
+            self._log_trade_to_db(order, result)
+        
+        return result
     
     def close_position(self, symbol: str) -> dict:
         """
@@ -154,7 +177,13 @@ class TradingEngine:
         )
         
         # Execute the order
-        return self.provider.execute_order(order)
+        result = self.provider.execute_order(order)
+        
+        # Log trade to database if db_service is available
+        if self.db is not None and result is not None:
+            self._log_trade_to_db(order, result)
+        
+        return result
     
     def rebalance(self, target: TargetPortfolio) -> List[dict]:
         """
@@ -249,6 +278,11 @@ class TradingEngine:
             try:
                 result = self.provider.execute_order(sell_order)
                 executed_orders.append(result)
+                
+                # Log trade to database if db_service is available
+                if self.db is not None and result is not None:
+                    self._log_trade_to_db(sell_order, result)
+                    
             except Exception as e:
                 print(f"✗ Error executing sell order for {sell_order.symbol}: {str(e)}")
                 # Continue with other orders even if one fails
@@ -260,6 +294,11 @@ class TradingEngine:
             try:
                 result = self.provider.execute_order(buy_order)
                 executed_orders.append(result)
+                
+                # Log trade to database if db_service is available
+                if self.db is not None and result is not None:
+                    self._log_trade_to_db(buy_order, result)
+                    
             except Exception as e:
                 print(f"✗ Error executing buy order for {buy_order.symbol}: {str(e)}")
                 # Continue with other orders even if one fails
@@ -267,5 +306,77 @@ class TradingEngine:
         
         print(f"✓ Rebalance complete: {len(executed_orders)} order(s) executed")
         return executed_orders
+    
+    def _log_trade_to_db(self, order: TradeOrder, result: dict) -> None:
+        """
+        Log a trade execution to the database.
+        
+        This is an internal helper method that extracts trade information
+        from the order and broker response, then logs it to the database.
+        
+        For MVP, we log the order submission (not the fill) since fills
+        happen asynchronously. This provides an audit trail of "What did
+        the bot decide to do?" which is the core of the Mudarabah audit trail.
+        
+        Args:
+            order: The TradeOrder that was executed
+            result: The raw response dict from the broker API
+        """
+        if self.db is None:
+            return
+        
+        try:
+            # Extract trade details from order and response
+            symbol = order.symbol
+            side = order.side.value  # "buy" or "sell"
+            
+            # Get quantity: prefer filled_qty if available, otherwise use requested qty
+            # For MVP, we log the order submission, so use requested qty
+            qty = result.get("filled_qty") or result.get("qty") or order.qty or 0.0
+            if qty is None:
+                qty = 0.0
+            
+            # Get price: prefer filled_avg_price if available, otherwise use limit_price or 0.0
+            # For market orders, we might not have a price yet (order is pending)
+            # For MVP, we log the order intent, so use limit_price if available, otherwise 0.0
+            price = (
+                result.get("filled_avg_price") or
+                result.get("limit_price") or
+                order.limit_price or
+                0.0
+            )
+            if price is None:
+                price = 0.0
+            
+            # Calculate notional: qty * price, or use order.notional if available
+            if order.notional is not None and order.notional > 0:
+                notional = order.notional
+            elif qty > 0 and price > 0:
+                notional = qty * price
+            else:
+                notional = 0.0
+            
+            # Get client_order_id: must be present for idempotency
+            client_order_id = result.get("client_order_id") or order.client_order_id
+            if not client_order_id:
+                # Fallback: generate one (shouldn't happen, but safety check)
+                client_order_id = f"log_{symbol}_{uuid.uuid4().hex[:8]}"
+            
+            # Log to database
+            self.db.log_trade(
+                strategy_name=self.strategy_name,
+                symbol=symbol,
+                side=side,
+                qty=float(qty),
+                price=float(price),
+                notional=float(notional),
+                client_order_id=client_order_id
+            )
+            
+            print(f"  📝 Trade logged to database: {side.upper()} {qty} {symbol} @ ${price:.2f}")
+            
+        except Exception as e:
+            # Don't fail the trade execution if logging fails
+            print(f"  ⚠ Warning: Failed to log trade to database: {str(e)}")
 
 

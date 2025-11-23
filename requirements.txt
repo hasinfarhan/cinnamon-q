@@ -48,6 +48,9 @@ pyyaml>=6.0.0  # Required for YAML configuration files
 alpaca-trade-api>=3.0.0
 pydantic>=2.0.0
 
+# Crypto data sources
+pycoingecko>=3.1.0  # CoinGecko API for crypto fundamentals
+
 # Database persistence
 sqlalchemy>=2.0.0  # Modern ORM for SQLite persistence
 

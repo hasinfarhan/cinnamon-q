@@ -81,12 +81,18 @@ class AlpacaProvider(ExecutionProvider):
             # Get positions
             positions = self.api.list_positions()
             position_dict: Dict[str, float] = {}
+            valuations_dict: Dict[str, float] = {}
             
             for position in positions:
                 symbol = position.symbol
                 # Alpaca returns qty as string, convert to float
                 qty = float(position.qty)
                 position_dict[symbol] = qty
+                
+                # Extract market_value for valuations
+                # Alpaca returns market_value as string, convert to float
+                market_value = float(position.market_value)
+                valuations_dict[symbol] = market_value
             
             # Create and return the validated PortfolioState model
             # Pydantic will validate that cash and total_equity are >= 0
@@ -94,7 +100,8 @@ class AlpacaProvider(ExecutionProvider):
                 timestamp=datetime.now(),
                 cash=cash,
                 total_equity=total_equity,
-                positions=position_dict
+                positions=position_dict,
+                valuations=valuations_dict
             )
         except Exception as e:
             print(f"✗ Error getting portfolio state: {str(e)}")

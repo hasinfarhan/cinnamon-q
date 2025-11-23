@@ -139,17 +139,20 @@ class TestPortfolioState:
         state = PortfolioState(
             cash=10000.0,
             total_equity=50000.0,
-            positions={"AAPL": 10.0, "GOOGL": 5.0}
+            positions={"AAPL": 10.0, "GOOGL": 5.0},
+            valuations={"AAPL": 1500.0, "GOOGL": 500.0}
         )
         assert state.cash == 10000.0
         assert state.total_equity == 50000.0
         assert state.positions["AAPL"] == 10.0
         assert state.positions["GOOGL"] == 5.0
+        assert state.valuations["AAPL"] == 1500.0
+        assert state.valuations["GOOGL"] == 500.0
     
     def test_rejects_negative_cash(self):
         """Test that negative cash is rejected."""
         with pytest.raises(ValidationError) as exc_info:
-            PortfolioState(cash=-100.0, total_equity=1000.0)
+            PortfolioState(cash=-100.0, total_equity=1000.0, valuations={})
         
         error_message = str(exc_info.value)
         assert "greater than or equal to 0" in error_message.lower()
@@ -157,19 +160,19 @@ class TestPortfolioState:
     def test_rejects_negative_equity(self):
         """Test that negative total equity is rejected."""
         with pytest.raises(ValidationError) as exc_info:
-            PortfolioState(cash=1000.0, total_equity=-100.0)
+            PortfolioState(cash=1000.0, total_equity=-100.0, valuations={})
         
         error_message = str(exc_info.value)
         assert "greater than or equal to 0" in error_message.lower()
     
     def test_allows_zero_cash(self):
         """Test that zero cash is allowed."""
-        state = PortfolioState(cash=0.0, total_equity=1000.0)
+        state = PortfolioState(cash=0.0, total_equity=1000.0, valuations={})
         assert state.cash == 0.0
     
     def test_allows_zero_equity(self):
         """Test that zero equity is allowed."""
-        state = PortfolioState(cash=0.0, total_equity=0.0)
+        state = PortfolioState(cash=0.0, total_equity=0.0, valuations={})
         assert state.total_equity == 0.0
     
     def test_empty_positions(self):
@@ -177,13 +180,15 @@ class TestPortfolioState:
         state = PortfolioState(
             cash=10000.0,
             total_equity=10000.0,
-            positions={}
+            positions={},
+            valuations={}
         )
         assert len(state.positions) == 0
+        assert len(state.valuations) == 0
     
     def test_state_immutability(self):
         """Test that portfolio state is immutable (frozen=True)."""
-        state = PortfolioState(cash=1000.0, total_equity=2000.0)
+        state = PortfolioState(cash=1000.0, total_equity=2000.0, valuations={})
         
         with pytest.raises(ValidationError):
             # Try to modify cash (should fail due to frozen=True)
@@ -191,7 +196,7 @@ class TestPortfolioState:
     
     def test_timestamp_auto_generated(self):
         """Test that timestamp is automatically generated if not provided."""
-        state = PortfolioState(cash=1000.0, total_equity=2000.0)
+        state = PortfolioState(cash=1000.0, total_equity=2000.0, valuations={})
         assert isinstance(state.timestamp, datetime)
 
 

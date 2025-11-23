@@ -139,10 +139,12 @@ class PortfolioState(BaseModel):
         cash: Available cash balance in USD
         total_equity: Total portfolio equity (cash + positions value) in USD
         positions: Dictionary mapping ticker symbols to quantities (shares)
+        valuations: Dictionary mapping ticker symbols to current market value in USD
     """
     timestamp: datetime = Field(default_factory=datetime.now)
     cash: float = Field(ge=0.0, description="Available cash balance (must be >= 0)")
     total_equity: float = Field(ge=0.0, description="Total portfolio equity (must be >= 0)")
     positions: Dict[str, float] = Field(default_factory=dict, description="Ticker -> quantity mapping")
+    valuations: Dict[str, float] = Field(default_factory=dict, description="Ticker -> market value in USD")
     
     model_config = ConfigDict(frozen=True)  # Make model immutable to prevent accidental modification

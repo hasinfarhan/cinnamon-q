@@ -6,11 +6,14 @@ using the Factory Pattern to select the appropriate broker provider.
 """
 
 import uuid
-from typing import Optional
+from typing import List, Optional
 
 from .interface import ExecutionProvider
-from .models import OrderSide, OrderType, PortfolioState, TradeOrder
+from .models import OrderSide, OrderType, PortfolioState, TargetPortfolio, TradeOrder
 from .providers.alpaca import AlpacaProvider
+
+# Minimum trade threshold to avoid "dust" trades
+MIN_TRADE_THRESHOLD = 1.0  # dollars
 
 
 class TradingEngine:
@@ -152,5 +155,101 @@ class TradingEngine:
         
         # Execute the order
         return self.provider.execute_order(order)
+    
+    def rebalance(self, target: TargetPortfolio) -> List[dict]:
+        """
+        Rebalance the portfolio to match the target weights.
+        
+        This method compares the target portfolio weights against the current
+        portfolio state and executes the necessary trades to achieve the target
+        allocation. Trades are sequenced: all sells execute first, then all buys.
+        
+        Args:
+            target: TargetPortfolio with desired weight distribution
+            
+        Returns:
+            List[dict]: List of order execution responses from the broker
+            
+        Raises:
+            ValueError: If target validation fails
+            Exception: If order execution fails
+        """
+        # Step A: Fetch current portfolio state
+        state = self.get_portfolio_state()
+        
+        # Step B: Identify all relevant tickers (union of target weights and current positions)
+        all_tickers = set(target.weights.keys()) | set(state.positions.keys())
+        
+        # Step C: Calculate differences and build order lists
+        sells: List[TradeOrder] = []
+        buys: List[TradeOrder] = []
+        
+        for ticker in all_tickers:
+            # Calculate target dollar value
+            target_weight = target.weights.get(ticker, 0.0)
+            target_equity = state.total_equity * target_weight
+            
+            # Get current dollar value
+            current_equity = state.valuations.get(ticker, 0.0)
+            
+            # Calculate difference
+            diff = target_equity - current_equity
+            
+            # Step D: Filter out small "dust" trades
+            if abs(diff) < MIN_TRADE_THRESHOLD:
+                continue
+            
+            # Generate unique client_order_id for idempotency
+            client_order_id = f"rebalance_{ticker}_{uuid.uuid4().hex[:8]}"
+            
+            # Step E: Create orders based on difference
+            if diff < 0:
+                # Need to sell: diff is negative, so use absolute value
+                sell_order = TradeOrder(
+                    symbol=ticker,
+                    side=OrderSide.SELL,
+                    notional=abs(diff),
+                    order_type=OrderType.MARKET,
+                    client_order_id=client_order_id
+                )
+                sells.append(sell_order)
+            elif diff > 0:
+                # Need to buy: diff is positive
+                buy_order = TradeOrder(
+                    symbol=ticker,
+                    side=OrderSide.BUY,
+                    notional=diff,
+                    order_type=OrderType.MARKET,
+                    client_order_id=client_order_id
+                )
+                buys.append(buy_order)
+        
+        # Step F: Execute orders (sells first, then buys)
+        executed_orders: List[dict] = []
+        
+        # Execute all sells first (crucial for cash management)
+        print(f"Executing {len(sells)} sell order(s)...")
+        for sell_order in sells:
+            try:
+                result = self.provider.execute_order(sell_order)
+                executed_orders.append(result)
+            except Exception as e:
+                print(f"✗ Error executing sell order for {sell_order.symbol}: {str(e)}")
+                # Continue with other orders even if one fails
+                continue
+        
+        # Execute all buys after sells complete
+        print(f"Executing {len(buys)} buy order(s)...")
+        for buy_order in buys:
+            try:
+                result = self.provider.execute_order(buy_order)
+                executed_orders.append(result)
+            except Exception as e:
+                print(f"✗ Error executing buy order for {buy_order.symbol}: {str(e)}")
+                # Continue with other orders even if one fails
+                continue
+        
+        print(f"✓ Rebalance complete: {len(executed_orders)} order(s) executed")
+        return executed_orders
 
 

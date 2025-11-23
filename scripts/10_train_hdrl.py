@@ -18,7 +18,9 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import EvalCallback, CheckpointCallback
 from stable_baselines3.common.monitor import Monitor
 
-from strategy.rl.env import CryptoDeepEnv
+# Import environment directly to avoid dependency chain issues
+sys.path.insert(0, str(project_root / "src" / "strategy" / "rl"))
+from env import CryptoDeepEnv
 
 
 def main():

@@ -19,6 +19,20 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Optional
 
+# Workaround for urllib3.packages.six issue with Python 3.12
+# This must be done before importing alpaca_trade_api
+try:
+    import six
+    import urllib3
+    # Create the packages.six structure that urllib3 expects
+    if not hasattr(urllib3, 'packages'):
+        import types
+        urllib3.packages = types.ModuleType('packages')
+    if not hasattr(urllib3.packages, 'six'):
+        urllib3.packages.six = six
+except Exception:
+    pass  # If it fails, try importing anyway
+
 import alpaca_trade_api as tradeapi
 import numpy as np
 import pandas as pd

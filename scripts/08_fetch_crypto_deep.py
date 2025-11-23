@@ -80,7 +80,7 @@ def initialize_apis():
         print(f"⚠ Warning: Failed to initialize CoinGecko API: {e}")
         coingecko_api = None
     
-    return alpaca_headers, alpaca_base_url, coingecko_api
+    return alpaca_headers, alpaca_data_url, coingecko_api
 
 
 def fetch_fundamentals(coin_id: str, coingecko_api: CoinGeckoAPI) -> Dict[str, Optional[float]]:

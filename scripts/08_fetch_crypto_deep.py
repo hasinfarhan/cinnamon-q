@@ -48,14 +48,13 @@ def initialize_apis():
     Initialize Alpaca and CoinGecko API clients.
     
     Returns:
-        tuple: (alpaca_headers, alpaca_base_url, coingecko_api) or (None, None, None) if credentials missing
+        tuple: (alpaca_headers, alpaca_data_url, coingecko_api) or (None, None, None) if credentials missing
     """
-    # Initialize Alpaca API (using REST API directly via requests to avoid urllib3 issues)
+    # Initialize Alpaca API (using Data API for historical bars, not Trading API)
     alpaca_headers = None
-    alpaca_base_url = None
+    alpaca_data_url = None
     api_key = os.getenv("ALPACA_API_KEY")
     secret_key = os.getenv("ALPACA_SECRET_KEY")
-    base_url = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
     
     if api_key and secret_key:
         try:
@@ -63,8 +62,11 @@ def initialize_apis():
                 "APCA-API-KEY-ID": api_key,
                 "APCA-API-SECRET-KEY": secret_key
             }
-            alpaca_base_url = base_url.rstrip('/')
-            print("✓ Alpaca API credentials loaded (using REST API directly)")
+            # Use Data API endpoint for historical crypto bars
+            # Paper trading uses: https://data.alpaca.markets
+            # Live trading uses: https://data.alpaca.markets (same)
+            alpaca_data_url = "https://data.alpaca.markets"
+            print("✓ Alpaca API credentials loaded (using Data API for historical bars)")
         except Exception as e:
             print(f"⚠ Warning: Failed to initialize Alpaca API: {e}")
     else:
@@ -130,14 +132,14 @@ def fetch_fundamentals(coin_id: str, coingecko_api: CoinGeckoAPI) -> Dict[str, O
         }
 
 
-def fetch_price_history(symbol: str, alpaca_headers: dict, alpaca_base_url: str, years: int = 3) -> pd.DataFrame:
+def fetch_price_history(symbol: str, alpaca_headers: dict, alpaca_data_url: str, years: int = 3) -> pd.DataFrame:
     """
-    Fetch price history from Alpaca for a crypto symbol using REST API directly.
+    Fetch price history from Alpaca Data API for a crypto symbol.
     
     Args:
         symbol: Alpaca crypto symbol (e.g., "BTC/USD")
         alpaca_headers: Alpaca API headers (with API keys)
-        alpaca_base_url: Alpaca API base URL
+        alpaca_data_url: Alpaca Data API base URL
         years: Number of years of history to fetch (default: 3)
     
     Returns:
@@ -153,15 +155,16 @@ def fetch_price_history(symbol: str, alpaca_headers: dict, alpaca_base_url: str,
         
         print(f"  Fetching {years} years of 1Hour bars for {symbol}...")
         
-        # Use Alpaca REST API directly via requests
-        # Crypto API endpoint: /v1beta1/crypto/bars (not /v2/stocks/)
-        url = f"{alpaca_base_url}/v1beta1/crypto/bars"
+        # Use Alpaca Data API for historical crypto bars
+        # Endpoint: /v1beta3/crypto/us/bars (Data API, not Trading API)
+        url = f"{alpaca_data_url}/v1beta3/crypto/us/bars"
         params = {
             "symbols": alpaca_symbol,  # Comma-separated list of symbols
             "timeframe": "1Hour",
             "start": start_date.strftime("%Y-%m-%dT%H:%M:%S-00:00"),
             "end": end_date.strftime("%Y-%m-%dT%H:%M:%S-00:00"),
             "limit": 10000,  # Max per request
+            "feed": "us"  # Required: US crypto feed
         }
         
         all_bars = []
@@ -174,6 +177,12 @@ def fetch_price_history(symbol: str, alpaca_headers: dict, alpaca_base_url: str,
                 current_params["page_token"] = page_token
             
             response = requests.get(url, headers=alpaca_headers, params=current_params)
+            
+            # Debug: Print response details if error
+            if response.status_code != 200:
+                print(f"  ⚠ API Response Status: {response.status_code}")
+                print(f"  ⚠ API Response: {response.text[:500]}")
+            
             response.raise_for_status()
             
             data = response.json()
@@ -302,9 +311,9 @@ def main():
     
     # Step 1: Initialize APIs
     print("Step 1: Initializing APIs...")
-    alpaca_headers, alpaca_base_url, coingecko_api = initialize_apis()
+    alpaca_headers, alpaca_data_url, coingecko_api = initialize_apis()
     
-    if alpaca_headers is None or alpaca_base_url is None:
+    if alpaca_headers is None or alpaca_data_url is None:
         print("✗ Error: Alpaca API not available. Cannot fetch price history.")
         sys.exit(1)
     
@@ -325,7 +334,7 @@ def main():
         print(f"Processing {ticker} ({mapping['alpaca']})...")
         
         # Fetch price history
-        price_df = fetch_price_history(mapping["alpaca"], alpaca_headers, alpaca_base_url, years=3)
+        price_df = fetch_price_history(mapping["alpaca"], alpaca_headers, alpaca_data_url, years=3)
         
         if price_df.empty:
             print(f"  ⚠ Skipping {ticker} - no price data available")

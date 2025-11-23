@@ -128,6 +128,16 @@ def main():
         print("✓ TradingEngine initialized successfully")
         print()
         
+        # Cleanup: Cancel all open orders to free up buying power
+        # This clears any "zombie orders" that may be holding cash reserves
+        print("Cleaning up any existing open orders...")
+        try:
+            engine.provider.cancel_all_orders()
+        except Exception as e:
+            print(f"⚠ Warning: Could not cancel orders: {str(e)}")
+            print("Continuing anyway...")
+        print()
+        
         # Get initial state
         initial_state = engine.get_portfolio_state()
         print(f"Initial Portfolio State:")

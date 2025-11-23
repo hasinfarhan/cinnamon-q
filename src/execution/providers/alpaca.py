@@ -150,6 +150,29 @@ class AlpacaProvider(ExecutionProvider):
             print(f"✗ Error getting cash balance: {str(e)}")
             raise
     
+    def cancel_all_orders(self) -> None:
+        """
+        Cancel all open orders to free up buying power.
+        
+        This is useful for cleaning up "zombie orders" that may be holding
+        cash reserves even when the market is closed or orders are pending.
+        """
+        try:
+            if not self.api:
+                raise RuntimeError("Not connected to Alpaca. Call connect() first.")
+            
+            print("🧹 Cleaning up open orders...")
+            self.api.cancel_all_orders()
+            
+            # Sleep to let Alpaca process the cancellations
+            import time
+            time.sleep(2)
+            
+            print("✓ All open orders cancelled")
+        except Exception as e:
+            print(f"✗ Error cancelling orders: {str(e)}")
+            # Don't raise - allow test to continue even if cancellation fails
+    
     def execute_order(self, order: TradeOrder) -> dict:
         """
         Execute a trade order with Alpaca.

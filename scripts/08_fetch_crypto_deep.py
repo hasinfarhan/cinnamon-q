@@ -156,6 +156,7 @@ def fetch_price_history(symbol: str, alpaca_headers: dict, alpaca_base_url: str,
         # Use Alpaca REST API directly via requests
         url = f"{alpaca_base_url}/v2/stocks/{alpaca_symbol}/bars"
         params = {
+            "symbols": alpaca_symbol,
             "timeframe": "1Hour",
             "start": start_date.strftime("%Y-%m-%dT%H:%M:%S-00:00"),
             "end": end_date.strftime("%Y-%m-%dT%H:%M:%S-00:00"),
@@ -174,7 +175,9 @@ def fetch_price_history(symbol: str, alpaca_headers: dict, alpaca_base_url: str,
             response.raise_for_status()
             
             data = response.json()
-            bars = data.get("bars", [])
+            # Crypto API returns bars in format: {"bars": {"BTCUSD": [...]}}
+            bars_dict = data.get("bars", {})
+            bars = bars_dict.get(alpaca_symbol, [])
             
             if not bars:
                 break

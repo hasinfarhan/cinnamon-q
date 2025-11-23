@@ -34,24 +34,38 @@ class NewsFetcher:
         Fetch news headlines for a crypto symbol.
         
         Args:
-            symbol: Crypto symbol (e.g., "BTC-USD", "ETH-USD")
+            symbol: Crypto symbol (e.g., "BTC-USD", "ETH-USD", "BTC/USD")
                 Note: yfinance uses format like "BTC-USD" for crypto
             limit: Maximum number of headlines to return (default: 50)
             days_back: Optional filter for news within N days (default: None = all)
         
         Returns:
             List of dictionaries with keys: 'timestamp', 'title', 'source'
+        
+        Note:
+            yfinance news availability for crypto is limited. If no news is found,
+            this method returns an empty list. Consider using alternative news
+            sources (NewsAPI, CryptoCompare, etc.) for production.
         """
         try:
             # yfinance uses format like "BTC-USD" for crypto
             # If symbol is "BTC/USD", convert to "BTC-USD"
             yf_symbol = symbol.replace("/", "-")
             
-            # Get ticker object
-            ticker = yf.Ticker(yf_symbol)
+            # Try alternative formats if the first one fails
+            symbol_variants = [yf_symbol]
+            if not yf_symbol.endswith("-USD"):
+                symbol_variants.append(f"{yf_symbol}-USD")
             
-            # Fetch news
-            news_list = ticker.news
+            news_list = None
+            for variant in symbol_variants:
+                try:
+                    ticker = yf.Ticker(variant)
+                    news_list = ticker.news
+                    if news_list:
+                        break
+                except:
+                    continue
             
             if not news_list:
                 return []
@@ -64,7 +78,11 @@ class NewsFetcher:
             
             for item in news_list[:limit]:
                 # Extract timestamp
-                timestamp = datetime.fromtimestamp(item.get('providerPublishTime', 0))
+                provider_time = item.get('providerPublishTime', 0)
+                if not provider_time:
+                    continue
+                    
+                timestamp = datetime.fromtimestamp(provider_time)
                 
                 # Filter by date if specified
                 if cutoff_date and timestamp < cutoff_date:
@@ -84,7 +102,7 @@ class NewsFetcher:
             return headlines
             
         except Exception as e:
-            print(f"⚠ Warning: Failed to fetch news for {symbol}: {e}")
+            # Silently return empty list - news fetching is optional
             return []
     
     def get_headlines_dataframe(

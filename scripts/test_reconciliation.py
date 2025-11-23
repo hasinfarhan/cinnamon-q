@@ -44,24 +44,31 @@ class DummyBrain:
         """
         Get the next target portfolio based on the current tick.
         
+        Uses crypto pairs (BTC/USD, ETH/USD) for 24/7 trading availability.
+        This allows testing even when stock markets are closed.
+        
         Returns:
             TargetPortfolio: The target state for this tick
             
         Tick Sequence:
             Tick 0: {} (Empty/Cash - Safety state)
-            Tick 1: {'AAPL': 0.6, 'MSFT': 0.4} (Entry)
-            Tick 2: {'AAPL': 0.4, 'MSFT': 0.6} (Rebalance)
+            Tick 1: {'BTC/USD': 0.6, 'ETH/USD': 0.4} (Entry)
+            Tick 2: {'BTC/USD': 0.4, 'ETH/USD': 0.6} (Rebalance)
             Tick 3: {} (Empty/Cash - Exit)
         """
+        # Use crypto pairs for 24/7 trading
+        ASSET_A = "BTC/USD"
+        ASSET_B = "ETH/USD"
+        
         if self.tick == 0:
             # Tick 0: Start in cash (Safety state)
             weights = {}
         elif self.tick == 1:
-            # Tick 1: Enter positions (60% AAPL, 40% MSFT)
-            weights = {'AAPL': 0.6, 'MSFT': 0.4}
+            # Tick 1: Enter positions (60% BTC/USD, 40% ETH/USD)
+            weights = {ASSET_A: 0.6, ASSET_B: 0.4}
         elif self.tick == 2:
-            # Tick 2: Rebalance (40% AAPL, 60% MSFT)
-            weights = {'AAPL': 0.4, 'MSFT': 0.6}
+            # Tick 2: Rebalance (40% BTC/USD, 60% ETH/USD)
+            weights = {ASSET_A: 0.4, ASSET_B: 0.6}
         elif self.tick == 3:
             # Tick 3: Exit to cash
             weights = {}
@@ -105,9 +112,11 @@ def main():
     print()
     print("This test simulates a complete trading cycle:")
     print("  Tick 0: Safety (100% Cash)")
-    print("  Tick 1: Entry (60% AAPL, 40% MSFT)")
-    print("  Tick 2: Rebalance (40% AAPL, 60% MSFT)")
+    print("  Tick 1: Entry (60% BTC/USD, 40% ETH/USD)")
+    print("  Tick 2: Rebalance (40% BTC/USD, 60% ETH/USD)")
     print("  Tick 3: Exit (100% Cash)")
+    print()
+    print("Note: Using crypto pairs (BTC/USD, ETH/USD) for 24/7 trading availability.")
     print()
     print("=" * 80)
     print()

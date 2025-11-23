@@ -10,6 +10,7 @@ The engine separates Signal Generation (Analysis) from Capital Allocation (Risk/
 from .allocators.top_k import TopKEqualWeight
 from .engine import StrategyEngine
 from .interfaces import Allocator, SignalGenerator
+from .ppo_strategy import PPOStrategy
 from .signals.momentum import MomentumSignal
 
 __all__ = [
@@ -17,6 +18,7 @@ __all__ = [
     "Allocator",
     "MomentumSignal",
     "TopKEqualWeight",
-    "StrategyEngine"
+    "StrategyEngine",
+    "PPOStrategy"
 ]
 

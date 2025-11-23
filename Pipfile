@@ -33,6 +33,7 @@ isort = ">=5.10.0"
 pandas-ta = "*"
 alpaca-trade-api = "*"
 pydantic = "*"
+pyarrow = "*"
 
 [dev-packages]
 

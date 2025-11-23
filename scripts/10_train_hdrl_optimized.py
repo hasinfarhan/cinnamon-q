@@ -281,24 +281,23 @@ def main():
         print("⚠ Training interrupted by user")
         print("  Model checkpoints saved in:", model_dir)
         print()
-    
-    # --- SAVE FINAL MODEL ---
-    print("Step 5: Saving final model and normalization stats...")
-    
-    # Save model
-    final_model_path = model_dir / "final_model"
-    model.save(str(final_model_path))
-    
-    # Save normalization stats (critical for inference)
-    vec_normalize_path = model_dir / "vec_normalize.pkl"
-    env.save(str(vec_normalize_path))
-    
-    training_time = (time.time() - start_time) / 60
-    
-    print(f"✓ Final model saved to: {final_model_path}.zip")
-    print(f"✓ Normalization stats saved to: {vec_normalize_path}")
-    print(f"✓ Training time: {training_time:.2f} minutes")
-    print()
+    finally:
+        # Always save final model and normalization stats
+        print("Step 5: Saving final model and normalization stats...")
+        
+        # Save final model state
+        final_model_path = model_dir / "final_model"
+        model.save(str(final_model_path))
+        print(f"✓ Final model saved to: {final_model_path}.zip")
+        
+        # Save normalization stats (critical for inference)
+        vec_normalize_path = model_dir / "vec_normalize.pkl"
+        env.save(str(vec_normalize_path))
+        print(f"✓ Normalization stats saved to: {vec_normalize_path}")
+        
+        training_time = (time.time() - start_time) / 60
+        print(f"✓ Training time: {training_time:.2f} minutes")
+        print()
     
     # --- TEST PREDICTIONS ---
     print("Step 6: Testing model predictions...")

@@ -19,23 +19,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Optional
 
-# Workaround for urllib3.packages.six issue with Python 3.12
-# This must be done before importing alpaca_trade_api
-try:
-    import six
-    import urllib3
-    # Create the packages.six structure that urllib3 expects
-    if not hasattr(urllib3, 'packages'):
-        import types
-        urllib3.packages = types.ModuleType('packages')
-    if not hasattr(urllib3.packages, 'six'):
-        urllib3.packages.six = six
-except Exception:
-    pass  # If it fails, try importing anyway
-
-import alpaca_trade_api as tradeapi
 import numpy as np
 import pandas as pd
+import requests
 from dotenv import load_dotenv
 from pycoingecko import CoinGeckoAPI
 
@@ -62,23 +48,23 @@ def initialize_apis():
     Initialize Alpaca and CoinGecko API clients.
     
     Returns:
-        tuple: (alpaca_api, coingecko_api) or (None, None) if credentials missing
+        tuple: (alpaca_headers, alpaca_base_url, coingecko_api) or (None, None, None) if credentials missing
     """
-    # Initialize Alpaca API
-    alpaca_api = None
+    # Initialize Alpaca API (using REST API directly via requests to avoid urllib3 issues)
+    alpaca_headers = None
+    alpaca_base_url = None
     api_key = os.getenv("ALPACA_API_KEY")
     secret_key = os.getenv("ALPACA_SECRET_KEY")
     base_url = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
     
     if api_key and secret_key:
         try:
-            alpaca_api = tradeapi.REST(
-                key_id=api_key,
-                secret_key=secret_key,
-                base_url=base_url,
-                api_version="v2"
-            )
-            print("✓ Alpaca API initialized")
+            alpaca_headers = {
+                "APCA-API-KEY-ID": api_key,
+                "APCA-API-SECRET-KEY": secret_key
+            }
+            alpaca_base_url = base_url.rstrip('/')
+            print("✓ Alpaca API credentials loaded (using REST API directly)")
         except Exception as e:
             print(f"⚠ Warning: Failed to initialize Alpaca API: {e}")
     else:
@@ -92,7 +78,7 @@ def initialize_apis():
         print(f"⚠ Warning: Failed to initialize CoinGecko API: {e}")
         coingecko_api = None
     
-    return alpaca_api, coingecko_api
+    return alpaca_headers, alpaca_base_url, coingecko_api
 
 
 def fetch_fundamentals(coin_id: str, coingecko_api: CoinGeckoAPI) -> Dict[str, Optional[float]]:
@@ -144,13 +130,14 @@ def fetch_fundamentals(coin_id: str, coingecko_api: CoinGeckoAPI) -> Dict[str, O
         }
 
 
-def fetch_price_history(symbol: str, alpaca_api: tradeapi.REST, years: int = 3) -> pd.DataFrame:
+def fetch_price_history(symbol: str, alpaca_headers: dict, alpaca_base_url: str, years: int = 3) -> pd.DataFrame:
     """
-    Fetch price history from Alpaca for a crypto symbol.
+    Fetch price history from Alpaca for a crypto symbol using REST API directly.
     
     Args:
         symbol: Alpaca crypto symbol (e.g., "BTC/USD")
-        alpaca_api: Alpaca API client instance
+        alpaca_headers: Alpaca API headers (with API keys)
+        alpaca_base_url: Alpaca API base URL
         years: Number of years of history to fetch (default: 3)
     
     Returns:
@@ -166,42 +153,72 @@ def fetch_price_history(symbol: str, alpaca_api: tradeapi.REST, years: int = 3) 
         
         print(f"  Fetching {years} years of 1Hour bars for {symbol}...")
         
-        # Fetch crypto bars (1Hour timeframe)
-        bars = alpaca_api.get_crypto_bars(
-            symbol=alpaca_symbol,
-            timeframe=tradeapi.TimeFrame.Hour,
-            start=start_date.isoformat(),
-            end=end_date.isoformat()
-        ).df
+        # Use Alpaca REST API directly via requests
+        url = f"{alpaca_base_url}/v2/stocks/{alpaca_symbol}/bars"
+        params = {
+            "timeframe": "1Hour",
+            "start": start_date.strftime("%Y-%m-%dT%H:%M:%S-00:00"),
+            "end": end_date.strftime("%Y-%m-%dT%H:%M:%S-00:00"),
+            "limit": 10000,  # Max per request
+            "page_token": None
+        }
         
-        if bars.empty:
+        all_bars = []
+        page_token = None
+        
+        while True:
+            if page_token:
+                params["page_token"] = page_token
+            
+            response = requests.get(url, headers=alpaca_headers, params=params)
+            response.raise_for_status()
+            
+            data = response.json()
+            bars = data.get("bars", [])
+            
+            if not bars:
+                break
+            
+            all_bars.extend(bars)
+            
+            # Check if there are more pages
+            page_token = data.get("next_page_token")
+            if not page_token:
+                break
+        
+        if not all_bars:
             print(f"  ⚠ Warning: No data returned for {symbol}")
             return pd.DataFrame()
         
-        # Reset index to get timestamp as column
-        bars = bars.reset_index()
+        # Convert to DataFrame
+        bars_df = pd.DataFrame(all_bars)
         
         # Rename columns to match expected format
-        bars = bars.rename(columns={
-            "time": "timestamp",
-            "open": "open",
-            "high": "high",
-            "low": "low",
-            "close": "close",
-            "volume": "volume"
+        bars_df = bars_df.rename(columns={
+            "t": "timestamp",
+            "o": "open",
+            "h": "high",
+            "l": "low",
+            "c": "close",
+            "v": "volume"
         })
         
         # Ensure timestamp is datetime
-        bars["timestamp"] = pd.to_datetime(bars["timestamp"])
+        bars_df["timestamp"] = pd.to_datetime(bars_df["timestamp"])
         
         # Add symbol column
-        bars["symbol"] = symbol
+        bars_df["symbol"] = symbol
         
-        print(f"  ✓ Fetched {len(bars)} bars for {symbol}")
-        return bars
+        # Sort by timestamp
+        bars_df = bars_df.sort_values("timestamp").reset_index(drop=True)
+        
+        print(f"  ✓ Fetched {len(bars_df)} bars for {symbol}")
+        return bars_df
         
     except Exception as e:
         print(f"  ✗ Error fetching price history for {symbol}: {e}")
+        import traceback
+        traceback.print_exc()
         return pd.DataFrame()
 
 
@@ -280,9 +297,9 @@ def main():
     
     # Step 1: Initialize APIs
     print("Step 1: Initializing APIs...")
-    alpaca_api, coingecko_api = initialize_apis()
+    alpaca_headers, alpaca_base_url, coingecko_api = initialize_apis()
     
-    if alpaca_api is None:
+    if alpaca_headers is None or alpaca_base_url is None:
         print("✗ Error: Alpaca API not available. Cannot fetch price history.")
         sys.exit(1)
     
@@ -303,7 +320,7 @@ def main():
         print(f"Processing {ticker} ({mapping['alpaca']})...")
         
         # Fetch price history
-        price_df = fetch_price_history(mapping["alpaca"], alpaca_api, years=3)
+        price_df = fetch_price_history(mapping["alpaca"], alpaca_headers, alpaca_base_url, years=3)
         
         if price_df.empty:
             print(f"  ⚠ Skipping {ticker} - no price data available")

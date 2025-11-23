@@ -34,6 +34,7 @@ pandas-ta = "*"
 alpaca-trade-api = "*"
 pydantic = "*"
 pyarrow = "*"
+pycoingecko = "*"
 
 [dev-packages]
 

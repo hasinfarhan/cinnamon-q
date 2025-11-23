@@ -19,7 +19,10 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root / "src"))
 
 from data.news import NewsFetcher
-from strategy.signals.llm_crypto import LLMCryptoSignal
+# Import LLM signal directly to avoid dependency chain issues
+import sys
+sys.path.insert(0, str(project_root / "src" / "strategy" / "signals"))
+from llm_crypto import LLMCryptoSignal
 
 # Mapping from our ticker format to yfinance format
 TICKER_MAPPING = {

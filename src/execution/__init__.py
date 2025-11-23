@@ -6,8 +6,21 @@ using the Adapter Pattern.
 """
 
 from .engine import TradingEngine
-from .models import OrderSide, OrderType, TradeOrder
+from .models import (
+    OrderSide,
+    OrderType,
+    TradeOrder,
+    TargetPortfolio,
+    PortfolioState
+)
 
-__all__ = ["TradingEngine", "OrderSide", "OrderType", "TradeOrder"]
+__all__ = [
+    "TradingEngine",
+    "OrderSide",
+    "OrderType",
+    "TradeOrder",
+    "TargetPortfolio",
+    "PortfolioState"
+]
 
 

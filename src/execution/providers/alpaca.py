@@ -117,9 +117,7 @@ class AlpacaProvider(ExecutionProvider):
             Exception: If order execution fails
         """
         try:
-            # Validate the order
-            order.validate()
-            
+            # Order validation happens automatically via Pydantic when TradeOrder is instantiated
             if not self.api:
                 raise RuntimeError("Not connected to Alpaca. Call connect() first.")
             

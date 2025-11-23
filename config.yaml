@@ -1,0 +1,30 @@
+# Project arynosQ Configuration File
+# Configuration as Code - All system settings are defined here
+
+system:
+  heartbeat_interval: 60  # seconds - Main execution loop interval
+  db_url: "sqlite:///arynosq.db"  # Database connection URL
+
+strategies:
+  - name: "momentum_bluechip"
+    signal: "momentum"
+    interval: "1d"  # Daily execution
+    params:
+      window: 30  # 30-day momentum window
+      k: 3  # Top 3 assets for equal-weight allocation
+
+execution:
+  provider: "alpaca"
+  paper: true  # Use paper trading (set to false for live trading)
+
+# Data configuration (for data fetcher)
+data:
+  tickers:
+    - "AAPL"
+    - "MSFT"
+    - "GOOGL"
+    - "TSLA"
+    - "NVDA"
+  period: "5y"  # 5 years of historical data
+  output_path: "data/processed/market_data.parquet"
+

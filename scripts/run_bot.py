@@ -19,6 +19,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root / "src"))
 
+from config.loader import load_config
 from execution.engine import TradingEngine
 from strategy.allocators.top_k import TopKEqualWeight
 from strategy.engine import StrategyEngine
@@ -32,15 +33,33 @@ def main():
     print("=" * 80)
     print()
     
+    # Step 0: Load Configuration
+    print("Step 0: Loading configuration...")
+    try:
+        config = load_config()
+        print(f"✓ Configuration loaded from config.yaml")
+        print(f"  Heartbeat interval: {config.system.heartbeat_interval}s")
+        print(f"  Strategies: {len(config.strategies)}")
+        print()
+    except Exception as e:
+        print(f"✗ Error loading configuration: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+    
     # Step 1: Data Refresh - Verify market data exists
     print("Step 1: Checking market data...")
-    data_path = project_root / "data" / "processed" / "market_data.parquet"
+    # Use config data path if available, otherwise default
+    if config.data and config.data.output_path:
+        data_path = project_root / config.data.output_path
+    else:
+        data_path = project_root / "data" / "processed" / "market_data.parquet"
     
     if not data_path.exists():
         print(f"✗ Error: Market data file not found: {data_path}")
         print()
         print("Please run the data ingestion script first:")
-        print("  python scripts/fetch_market_data.py")
+        print("  python scripts/01_fetch_market_data.py")
         print()
         print("Or ensure the parquet file exists at:")
         print(f"  {data_path}")
@@ -54,13 +73,25 @@ def main():
     print("-" * 80)
     
     try:
-        # Initialize signal generator: MomentumSignal with 30-day window
-        signal_gen = MomentumSignal(window_days=30)
-        print(f"✓ Signal Generator: {type(signal_gen).__name__} (window=30 days)")
+        # Get first strategy from config (for MVP, we use the first one)
+        if not config.strategies:
+            raise ValueError("No strategies defined in config.yaml")
         
-        # Initialize allocator: TopKEqualWeight with k=3
-        allocator = TopKEqualWeight(k=3)
-        print(f"✓ Allocator: {type(allocator).__name__} (k=3)")
+        strategy_config = config.strategies[0]
+        print(f"✓ Using strategy: {strategy_config.name}")
+        
+        # Initialize signal generator based on config
+        if strategy_config.signal == "momentum":
+            window = strategy_config.params.get("window", 30)
+            signal_gen = MomentumSignal(window_days=window)
+            print(f"✓ Signal Generator: {type(signal_gen).__name__} (window={window} days)")
+        else:
+            raise ValueError(f"Unknown signal type: {strategy_config.signal}")
+        
+        # Initialize allocator based on config
+        k = strategy_config.params.get("k", 3)
+        allocator = TopKEqualWeight(k=k)
+        print(f"✓ Allocator: {type(allocator).__name__} (k={k})")
         
         # Initialize StrategyEngine
         brain = StrategyEngine(
@@ -103,9 +134,10 @@ def main():
     print("-" * 80)
     
     try:
-        # Initialize TradingEngine with Alpaca provider
-        engine = TradingEngine(provider_name="alpaca")
-        print(f"✓ TradingEngine initialized with Alpaca provider")
+        # Initialize TradingEngine with provider from config
+        engine = TradingEngine(provider_name=config.execution.provider)
+        print(f"✓ TradingEngine initialized with {config.execution.provider} provider")
+        print(f"  Paper trading: {config.execution.paper}")
         print()
         
         # Get current portfolio state

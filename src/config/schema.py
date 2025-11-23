@@ -77,6 +77,31 @@ class ExecutionConfig(BaseModel):
     model_config = {"frozen": True}
 
 
+class DataConfig(BaseModel):
+    """
+    Data fetching configuration.
+    
+    Attributes:
+        tickers: List of ticker symbols to fetch
+        period: Historical data period (e.g., "5y" for 5 years)
+        output_path: Path to save the processed market data
+    """
+    tickers: List[str] = Field(
+        default_factory=list,
+        description="List of ticker symbols to fetch"
+    )
+    period: str = Field(
+        default="5y",
+        description="Historical data period (e.g., '5y', '1y', '6mo')"
+    )
+    output_path: str = Field(
+        default="data/processed/market_data.parquet",
+        description="Path to save the processed market data"
+    )
+    
+    model_config = {"frozen": True}
+
+
 class AppConfig(BaseModel):
     """
     Root application configuration model.
@@ -88,6 +113,7 @@ class AppConfig(BaseModel):
         system: System-level configuration
         strategies: List of strategy configurations
         execution: Execution engine configuration
+        data: Data fetching configuration (optional)
     """
     system: SystemConfig = Field(
         default_factory=lambda: SystemConfig(),
@@ -100,6 +126,10 @@ class AppConfig(BaseModel):
     execution: ExecutionConfig = Field(
         default_factory=lambda: ExecutionConfig(),
         description="Execution engine configuration"
+    )
+    data: Optional[DataConfig] = Field(
+        default=None,
+        description="Data fetching configuration (optional)"
     )
     
     model_config = {"frozen": True}

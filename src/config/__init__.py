@@ -5,7 +5,15 @@ This module provides configuration management using YAML files and Pydantic mode
 Enables Configuration as Code for the entire system.
 """
 
-from .schema import AppConfig, ExecutionConfig, StrategyConfig, SystemConfig
+from .loader import load_config
+from .schema import AppConfig, DataConfig, ExecutionConfig, StrategyConfig, SystemConfig
 
-__all__ = ["SystemConfig", "StrategyConfig", "ExecutionConfig", "AppConfig"]
+__all__ = [
+    "SystemConfig",
+    "StrategyConfig",
+    "ExecutionConfig",
+    "DataConfig",
+    "AppConfig",
+    "load_config",
+]
 

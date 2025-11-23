@@ -33,6 +33,15 @@ sys.path.insert(0, str(project_root / "src" / "strategy" / "rl"))
 from fast_env import FastCryptoEnv
 
 
+def _check_tensorboard():
+    """Check if tensorboard is available."""
+    try:
+        import tensorboard
+        return True
+    except ImportError:
+        return False
+
+
 def make_env(data_path: Path):
     """
     Factory function for creating environments.
@@ -175,7 +184,7 @@ def main():
         vf_coef=0.5,    # Value function loss weight
         max_grad_norm=0.5,
         policy_kwargs=policy_kwargs,
-        tensorboard_log=str(tensorboard_dir)
+        tensorboard_log=str(tensorboard_dir) if _check_tensorboard() else None
     )
     
     print("✓ PPO agent initialized")

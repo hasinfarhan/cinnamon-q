@@ -11,6 +11,7 @@ pandas-ta>=0.3.14b0
 # Reinforcement learning
 stable-baselines3>=1.6.0
 finrl>=0.3.6
+tensorboard>=2.10.0  # Required for training visualization
 
 # AI and language models
 openai>=1.0.0

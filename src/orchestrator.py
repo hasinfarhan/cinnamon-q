@@ -25,6 +25,7 @@ from database.service import DatabaseService
 from execution.engine import TradingEngine
 from strategy.allocators.top_k import TopKEqualWeight
 from strategy.engine import StrategyEngine
+from strategy.ppo_strategy import PPOStrategy
 from strategy.signals.momentum import MomentumSignal
 
 
@@ -89,7 +90,7 @@ class BotOrchestrator:
         
         # Step 4: Initialize Strategy Engines
         print("Step 4: Initializing strategy engines...")
-        self.strategies: Dict[str, StrategyEngine] = {}
+        self.strategies: Dict[str, any] = {}  # Can be StrategyEngine or PPOStrategy
         for strategy_config in self.config.strategies:
             strategy_engine = self._create_strategy_engine(strategy_config)
             self.strategies[strategy_config.name] = strategy_engine
@@ -106,19 +107,43 @@ class BotOrchestrator:
         print("=" * 80)
         print()
     
-    def _create_strategy_engine(self, strategy_config: StrategyConfig) -> StrategyEngine:
+    def _create_strategy_engine(self, strategy_config: StrategyConfig):
         """
-        Create a StrategyEngine instance from a StrategyConfig.
+        Create a StrategyEngine or PPOStrategy instance from a StrategyConfig.
         
         This method unpacks the strategy configuration and creates the
-        appropriate signal generator and allocator instances.
+        appropriate strategy instance based on the signal type.
         
         Args:
             strategy_config: StrategyConfig from the YAML file
         
         Returns:
-            StrategyEngine: Configured strategy engine instance
+            StrategyEngine or PPOStrategy: Configured strategy instance
         """
+        # Handle PPO strategy
+        if strategy_config.signal == "ppo":
+            # Extract PPO-specific parameters
+            params = strategy_config.params
+            model_path = Path(params.get("model_path", "models/hdrl_optimized/final_model.zip"))
+            vec_norm_path = Path(params.get("vec_norm_path", "models/hdrl_optimized/vec_normalize.pkl"))
+            data_path = Path(params.get("data_path", "data/processed/crypto_training_data.parquet"))
+            
+            # Convert relative paths to absolute
+            if not model_path.is_absolute():
+                model_path = project_root / model_path
+            if not vec_norm_path.is_absolute():
+                vec_norm_path = project_root / vec_norm_path
+            if not data_path.is_absolute():
+                data_path = project_root / data_path
+            
+            # Create and return PPOStrategy
+            return PPOStrategy(
+                model_path=model_path,
+                vec_norm_path=vec_norm_path,
+                data_path=data_path
+            )
+        
+        # Handle traditional StrategyEngine (momentum, etc.)
         # Determine data path
         if self.config.data and self.config.data.output_path:
             data_path = self.config.data.output_path

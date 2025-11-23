@@ -44,6 +44,7 @@ pyarrow>=10.0.0  # Required for parquet file support
 
 # Utilities
 tqdm>=4.62.0
+rich>=12.0.0  # Required for progress bar in stable-baselines3
 python-dotenv>=0.19.0
 pyyaml>=6.0.0  # Required for YAML configuration files
 

@@ -248,10 +248,18 @@ def main():
     start_time = time.time()
     
     try:
+        # Check if rich is available for progress bar
+        try:
+            import rich
+            use_progress_bar = True
+        except ImportError:
+            use_progress_bar = False
+            print("  ⚠ Progress bar disabled (rich not installed)")
+        
         model.learn(
             total_timesteps=total_timesteps,
             callback=[checkpoint_callback, eval_callback],
-            progress_bar=True
+            progress_bar=use_progress_bar
         )
         print()
         print("✓ Training completed successfully!")

@@ -25,7 +25,11 @@ import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize, DummyVecEnv
 from stable_baselines3.common.env_util import make_vec_env
-from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
+from stable_baselines3.common.callbacks import (
+    CheckpointCallback,
+    EvalCallback,
+    StopTrainingOnNoModelImprovement
+)
 from stable_baselines3.common.monitor import Monitor
 
 # Import environment directly to avoid dependency chain
@@ -222,13 +226,21 @@ def main():
             training=False
         )
     
+    # Early stopping callback: Stop if no improvement
+    stop_callback = StopTrainingOnNoModelImprovement(
+        max_no_improvement_evals=10,  # Stop if no new record after 10 checks
+        min_evals=20,  # Warmup period (evaluate at least 20 times first)
+        verbose=1
+    )
+    
     eval_callback = EvalCallback(
         eval_env,
         best_model_save_path=str(model_dir / "best_model"),
         log_path=str(log_dir / "evaluations"),
         eval_freq=50000,  # Evaluate every 50k steps
         deterministic=True,
-        render=False
+        render=False,
+        callback_on_new_best=stop_callback  # Trigger early stopping on new best
     )
     
     print("✓ Callbacks configured")

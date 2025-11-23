@@ -203,8 +203,14 @@ class AlpacaProvider(ExecutionProvider):
             if order.client_order_id:
                 order_params["client_order_id"] = order.client_order_id
             
+            # FIX: Crypto requires 'gtc', Stocks use 'day'
+            # Simple heuristic: Crypto pairs on Alpaca usually contain '/' (e.g. BTC/USD)
+            # Stocks are single ticker symbols (e.g. AAPL)
+            time_in_force = 'gtc' if '/' in symbol else 'day'
+            order_params["time_in_force"] = time_in_force
+            
             # Submit the order
-            print(f"Submitting order: {symbol} {side} {order_type}")
+            print(f"Submitting order: {symbol} {side} {order_type} (time_in_force: {time_in_force})")
             if qty:
                 print(f"  Quantity: {qty}")
             if notional:

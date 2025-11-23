@@ -6,17 +6,27 @@ headlines on a "Halal Utility Scale" (0.0 = Hype/Speculation, 1.0 = Utility/Adop
 
 This aligns with Mudarabah principles by favoring fundamental utility over
 pure speculation (Maisir/Gambling).
+
+Supports Mock Mode for development when OPENAI_API_KEY is not available.
 """
 
 import json
 import os
+import random
 from typing import Dict, List, Optional
 
 from dotenv import load_dotenv
-from openai import OpenAI
 
 # Load environment variables
 load_dotenv()
+
+# Try to import OpenAI, but don't fail if not available
+try:
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
+    OpenAI = None
 
 
 class LLMCryptoSignal:
@@ -38,7 +48,8 @@ class LLMCryptoSignal:
         self,
         model: str = "gpt-4o-mini",
         api_key: Optional[str] = None,
-        cache_enabled: bool = True
+        cache_enabled: bool = True,
+        mock_mode: Optional[bool] = None
     ):
         """
         Initialize the LLM Crypto Signal generator.
@@ -47,18 +58,35 @@ class LLMCryptoSignal:
             model: OpenAI model to use (default: "gpt-4o-mini" for cost efficiency)
             api_key: OpenAI API key (default: from OPENAI_API_KEY env var)
             cache_enabled: Whether to use local cache for headlines (default: True)
+            mock_mode: Force mock mode (True) or real API (False). 
+                       If None, auto-detect based on API key availability.
+        
+        Note:
+            If OPENAI_API_KEY is not available, automatically falls back to Mock Mode
+            which returns random scores between 0.4 and 0.8 for development purposes.
         """
         self.model = model
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
-        
-        if not self.api_key:
-            raise ValueError(
-                "OPENAI_API_KEY not found. Please set it in your .env file or "
-                "pass it as api_key parameter."
-            )
-        
-        self.client = OpenAI(api_key=self.api_key)
         self.cache_enabled = cache_enabled
+        
+        # Determine if we should use mock mode
+        if mock_mode is None:
+            # Auto-detect: use mock if no API key or OpenAI not available
+            self.mock_mode = not self.api_key or not OPENAI_AVAILABLE
+        else:
+            self.mock_mode = mock_mode
+        
+        if self.mock_mode:
+            print("⚠ Warning: LLMCryptoSignal running in MOCK MODE (no OpenAI API key)")
+            print("  Scores will be random values between 0.4-0.8 for development.")
+            print("  Set OPENAI_API_KEY in .env to enable real LLM scoring.")
+            self.client = None
+        else:
+            if not OPENAI_AVAILABLE:
+                raise ImportError(
+                    "OpenAI package not installed. Install with: pip install openai"
+                )
+            self.client = OpenAI(api_key=self.api_key)
     
     def _create_prompt(self, headline: str, symbol: str) -> str:
         """
@@ -97,7 +125,7 @@ Return the Utility Score as JSON."""
     
     def score_headline(self, headline: str, symbol: str) -> Dict[str, any]:
         """
-        Score a single headline using OpenAI.
+        Score a single headline using OpenAI (or Mock Mode).
         
         Args:
             headline: News headline to score
@@ -107,6 +135,16 @@ Return the Utility Score as JSON."""
             Dictionary with 'score' (float) and 'reason' (str)
             On error, returns {'score': 0.5, 'reason': 'Error message'}
         """
+        # Mock Mode: Return random score for development
+        if self.mock_mode:
+            # Random score between 0.4 and 0.8 (slightly positive bias for training)
+            mock_score = random.uniform(0.4, 0.8)
+            return {
+                'score': mock_score,
+                'reason': 'Mock mode: Random score for development (no API key)'
+            }
+        
+        # Real API Mode
         try:
             system_prompt, user_prompt = self._create_prompt(headline, symbol)
             

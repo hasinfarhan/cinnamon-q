@@ -91,13 +91,6 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
     # This is the key optimization - replaces nested loops with C-level operations
     # Using pivot() instead of pivot_table() for better performance (no aggregation needed)
     
-    # Create a complete index/column structure first
-    # This ensures all timestamp-ticker combinations exist
-    complete_index = pd.MultiIndex.from_product(
-        [timestamps, asset_list],
-        names=['timestamp', 'ticker']
-    )
-    
     # Pivot each feature separately
     # pivot() is faster than pivot_table() when we know there's one value per combination
     # If duplicates exist, pivot() will raise ValueError, so we catch and use pivot_table as fallback

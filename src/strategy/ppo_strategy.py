@@ -257,19 +257,35 @@ class PPOStrategy:
                     volatility = 0.0
                 
                 # Normalize commit_count (MinMax scaling 0-1)
-                commit_count = row.get('commit_count_4_weeks', 0)
+                commit_count = row.get('commit_count_4_weeks', None)
+                # Handle None/NaN values - use placeholder if missing
+                if commit_count is None or pd.isna(commit_count):
+                    commit_count = 100.0  # Placeholder for missing fundamentals
+                
                 # Use base_asset for data lookup (data uses "BTC", not "BTC/USD")
                 asset_all_data = df[df['ticker'] == base_asset]
-                commit_min = asset_all_data['commit_count_4_weeks'].min()
-                commit_max = asset_all_data['commit_count_4_weeks'].max()
-                if commit_max > commit_min:
-                    commit_count_norm = (commit_count - commit_min) / (commit_max - commit_min)
+                commit_values = asset_all_data['commit_count_4_weeks'].dropna()
+                
+                if len(commit_values) > 0:
+                    commit_min = commit_values.min()
+                    commit_max = commit_values.max()
+                    if commit_max > commit_min:
+                        commit_count_norm = (commit_count - commit_min) / (commit_max - commit_min)
+                        commit_count_norm = max(0.0, min(1.0, commit_count_norm))  # Clip to [0, 1]
+                    else:
+                        commit_count_norm = 0.5
                 else:
+                    # No commit_count data available, use neutral value
                     commit_count_norm = 0.5
                 
                 # Utility score (already 0-1, but ensure valid)
-                utility_score = row.get('utility_score', 0.5)
-                utility_score = max(0.0, min(1.0, float(utility_score)))
+                utility_score = row.get('utility_score', None)
+                # Handle None/NaN values - default to neutral (0.5)
+                if utility_score is None or pd.isna(utility_score):
+                    utility_score = 0.5
+                else:
+                    utility_score = float(utility_score)
+                utility_score = max(0.0, min(1.0, utility_score))  # Clip to [0, 1]
                 
                 obs[idx] = returns
                 obs[idx + 1] = volatility

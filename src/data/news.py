@@ -38,6 +38,7 @@ class NewsFetcher:
         
         Args:
             use_cryptopanic: Whether to use CryptoPanic API (default: True)
+                Note: Requires CRYPTOPANIC_API_KEY in .env (free tier available)
             use_yfinance: Whether to use yfinance as fallback (default: True)
         """
         self.use_cryptopanic = use_cryptopanic
@@ -46,6 +47,14 @@ class NewsFetcher:
         
         # CryptoPanic API base URL
         self.cryptopanic_base_url = "https://cryptopanic.com/api/v1"
+        
+        # Warn if CryptoPanic is enabled but no API key
+        if self.use_cryptopanic and not self.cryptopanic_api_key:
+            print("⚠ Warning: CryptoPanic enabled but no CRYPTOPANIC_API_KEY found.")
+            print("  CryptoPanic will be skipped. Get free API key from:")
+            print("  https://cryptopanic.com/developers/api/")
+            print("  Falling back to yfinance only.")
+            self.use_cryptopanic = False
     
     def _fetch_cryptopanic_news(
         self,
@@ -73,17 +82,21 @@ class NewsFetcher:
             coin_symbol = symbol.replace("-USD", "").replace("/USD", "").upper()
             
             # Build API URL
-            # Endpoint: /posts/?currencies=BTC&public=true
+            # Endpoint: /posts/?currencies=BTC&auth_token=YOUR_KEY
+            # Note: CryptoPanic requires auth_token even for free tier
+            # Get free API key from: https://cryptopanic.com/developers/api/
             url = f"{self.cryptopanic_base_url}/posts/"
             params = {
                 "currencies": coin_symbol,
-                "public": "true",  # Public API (no auth required for free tier)
                 "kind": "news",  # Only news, not media
             }
             
-            # Add API key if available (for higher rate limits)
-            if self.cryptopanic_api_key:
-                params["auth_token"] = self.cryptopanic_api_key
+            # CryptoPanic requires auth_token (even for free tier)
+            if not self.cryptopanic_api_key:
+                # Skip CryptoPanic if no API key
+                return []
+            
+            params["auth_token"] = self.cryptopanic_api_key
             
             response = requests.get(url, params=params, timeout=10)
             response.raise_for_status()

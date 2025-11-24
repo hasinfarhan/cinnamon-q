@@ -191,7 +191,7 @@ class AlpacaProvider(ExecutionProvider):
     def fetch_crypto_history(
         self,
         symbols: List[str],
-        timeframe: str = "1Hour",
+        timeframe: str = "15Min",  # v1.2: Default to 15Min for high-frequency
         hours: int = 500,
         include_fundamentals: bool = False
     ) -> pd.DataFrame:

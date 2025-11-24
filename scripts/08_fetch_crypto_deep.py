@@ -32,15 +32,35 @@ sys.path.insert(0, str(project_root / "src"))
 # Load environment variables
 load_dotenv()
 
-# Crypto Universe Mapping: Alpaca Symbol -> CoinGecko ID
-CRYPTO_UNIVERSE = {
-    "BTC": {"alpaca": "BTC/USD", "coingecko": "bitcoin"},
-    "ETH": {"alpaca": "ETH/USD", "coingecko": "ethereum"},
-    "SOL": {"alpaca": "SOL/USD", "coingecko": "solana"},
-    "LINK": {"alpaca": "LINK/USD", "coingecko": "chainlink"},
-    "UNI": {"alpaca": "UNI/USD", "coingecko": "uniswap"},
-    "AAVE": {"alpaca": "AAVE/USD", "coingecko": "aave"},
-}
+# Crypto Universe is now loaded from CSV file
+# This allows easy expansion without code changes
+CRYPTO_UNIVERSE_CSV = Path(__file__).parent.parent / "data" / "raw" / "crypto_universe.csv"
+
+
+def load_crypto_universe() -> dict:
+    """
+    Load crypto universe from CSV file.
+    
+    Returns:
+        dict: Mapping of symbol -> {alpaca, coingecko}
+    """
+    if not CRYPTO_UNIVERSE_CSV.exists():
+        raise FileNotFoundError(
+            f"Crypto universe CSV not found: {CRYPTO_UNIVERSE_CSV}\n"
+            "Please create data/raw/crypto_universe.csv with columns: symbol,alpaca_symbol,coingecko_id"
+        )
+    
+    df = pd.read_csv(CRYPTO_UNIVERSE_CSV)
+    universe = {}
+    
+    for _, row in df.iterrows():
+        symbol = row['symbol']
+        universe[symbol] = {
+            "alpaca": row['alpaca_symbol'],
+            "coingecko": row['coingecko_id']
+        }
+    
+    return universe
 
 
 def initialize_apis():
@@ -132,7 +152,7 @@ def fetch_fundamentals(coin_id: str, coingecko_api: CoinGeckoAPI) -> Dict[str, O
         }
 
 
-def fetch_price_history(symbol: str, alpaca_headers: dict, alpaca_data_url: str, years: int = 3) -> pd.DataFrame:
+def fetch_price_history(symbol: str, alpaca_headers: dict, alpaca_data_url: str, years: int = 3, timeframe: str = "15Min") -> pd.DataFrame:
     """
     Fetch price history from Alpaca Data API for a crypto symbol.
     
@@ -141,6 +161,7 @@ def fetch_price_history(symbol: str, alpaca_headers: dict, alpaca_data_url: str,
         alpaca_headers: Alpaca API headers (with API keys)
         alpaca_data_url: Alpaca Data API base URL
         years: Number of years of history to fetch (default: 3)
+        timeframe: Bar timeframe (default: "15Min" for high-frequency trading)
     
     Returns:
         pd.DataFrame: DataFrame with columns: timestamp, open, high, low, close, volume
@@ -154,7 +175,7 @@ def fetch_price_history(symbol: str, alpaca_headers: dict, alpaca_data_url: str,
         # Keep the original symbol format - don't remove the slash
         alpaca_symbol = symbol  # Already in "BTC/USD" format
         
-        print(f"  Fetching {years} years of 1Hour bars for {symbol}...")
+        print(f"  Fetching {years} years of {timeframe} bars for {symbol}...")
         
         # Use Alpaca Data API for historical crypto bars
         # Endpoint: /v1beta3/crypto/us/bars (Data API, not Trading API)
@@ -162,7 +183,7 @@ def fetch_price_history(symbol: str, alpaca_headers: dict, alpaca_data_url: str,
         url = f"{alpaca_data_url}/v1beta3/crypto/us/bars"
         params = {
             "symbols": alpaca_symbol,  # Format: "BTC/USD" (with slash, comma-separated for multiple)
-            "timeframe": "1Hour",
+            "timeframe": timeframe,  # Now configurable (15Min for high-frequency)
             "start": start_date.strftime("%Y-%m-%dT%H:%M:%S-00:00"),
             "end": end_date.strftime("%Y-%m-%dT%H:%M:%S-00:00"),
             "limit": 10000,  # Max per request

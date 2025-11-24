@@ -13,16 +13,21 @@ strategies:
   #   params:
   #     window: 30  # 30-day momentum window
   #     k: 3  # Top 3 assets for equal-weight allocation
-  
-  # HDRL PPO Strategy
+
+  # HDRL PPO Strategy - v1.2 High-Frequency Upgrade
   - name: "crypto_hdrl_v1"
     signal: "ppo"
-    interval: "1h"  # Run every hour
+    interval: "15m"  # Run every 15 minutes (96 decisions per day)
     params:
       # Point to the files we prepared/recovered
       model_path: "models/hdrl_optimized/final_model.zip"
       vec_norm_path: "models/hdrl_optimized/vec_normalize.pkl"
       data_path: "data/processed/crypto_training_data.parquet"
+      # Window sizes for 15-minute bars:
+      # window_size: 96 = 24 hours of 15m bars (1 day trend)
+      # training_window_size: 300 = ~3 days for normalization history
+      window_size: 96
+      training_window_size: 300
 
 execution:
   provider: "alpaca"

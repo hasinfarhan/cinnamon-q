@@ -233,11 +233,12 @@ class PPOStrategy:
         
         print(f"📡 Fetching live market data for {len(alpaca_symbols)} assets...")
         
-        # Fetch enough history for feature calculation (500 hours = ~21 days)
+        # Fetch enough history for feature calculation
+        # For 15Min bars: 500 hours = 2000 bars (~83 days)
         # This ensures we can calculate rolling volatility and returns correctly
         df = self.provider.fetch_crypto_history(
             symbols=alpaca_symbols,
-            timeframe="1Hour",
+            timeframe="15Min",  # v1.2: High-frequency 15-minute bars
             hours=500,  # Enough for rolling features
             include_fundamentals=False  # We'll use synthetic/neutral values
         )

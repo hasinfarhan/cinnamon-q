@@ -49,13 +49,17 @@ ARCHIVE_DIR = project_root / "models" / "archive"
 DATA_PATH = project_root / "data" / "processed" / "crypto_training_data.parquet"
 
 # Training hyperparameters (fine-tuning, not full training)
-FINE_TUNE_TIMESTEPS = 500_000  # Shorter than initial training (10M)
+# v1.2: Optimized for daily retraining (faster convergence)
+FINE_TUNE_TIMESTEPS = 300_000  # Reduced from 500K for daily retraining (faster)
 FINE_TUNE_BATCH_SIZE = 2048
 FINE_TUNE_LEARNING_RATE = 3e-4
 
 # Evaluation parameters
 EVAL_EPISODES = 10  # Number of episodes to evaluate each model
 EVAL_DATA_SPLIT = 0.1  # Use last 10% of data for evaluation
+
+# v1.2: Rolling window for daily retraining (last 6 months instead of 3 years)
+ROLLING_WINDOW_MONTHS = 6  # Use last 6 months of data for faster training
 
 
 # ============================================================================
@@ -66,16 +70,18 @@ def refresh_training_data() -> Path:
     """
     Refresh the training dataset with latest market data.
     
+    v1.2: Uses rolling window (last 6 months) for faster daily retraining.
+    
     For MVP, we'll use the existing data file. In production, this would:
     - Call scripts/08_fetch_crypto_deep.py to fetch new data
-    - Append to existing crypto_training_data.parquet
-    - Ensure we have 3 years of rolling window
+    - Apply rolling window filter (last 6 months)
+    - Save to crypto_training_data.parquet
     
     Returns:
         Path to the updated training data file
     """
     print("=" * 80)
-    print("Step 1: Data Refresh")
+    print("Step 1: Data Refresh (Rolling Window)")
     print("=" * 80)
     print()
     
@@ -85,15 +91,22 @@ def refresh_training_data() -> Path:
             "Please run scripts/08_fetch_crypto_deep.py first to generate data."
         )
     
-    # TODO: In production, call the data fetcher here to get fresh data
-    # For MVP, we'll use the existing file
-    print(f"✓ Using existing training data: {DATA_PATH}")
+    # Load full dataset
+    print(f"📊 Loading training data: {DATA_PATH}")
+    df = pd.read_parquet(DATA_PATH)
+    print(f"  Full dataset: {len(df)} rows")
     print(f"  File size: {DATA_PATH.stat().st_size / 1024 / 1024:.2f} MB")
     
-    # Verify data freshness
-    df = pd.read_parquet(DATA_PATH)
+    # v1.2: Apply rolling window (last 6 months) for faster daily retraining
     latest_timestamp = pd.to_datetime(df['timestamp']).max()
-    print(f"  Latest data: {latest_timestamp}")
+    cutoff_date = latest_timestamp - pd.Timedelta(days=ROLLING_WINDOW_MONTHS * 30)
+    
+    # Filter to rolling window
+    df_filtered = df[df['timestamp'] >= cutoff_date].copy()
+    
+    print(f"  Rolling window: Last {ROLLING_WINDOW_MONTHS} months")
+    print(f"  Filtered dataset: {len(df_filtered)} rows ({len(df_filtered)/len(df)*100:.1f}% of full dataset)")
+    print(f"  Date range: {df_filtered['timestamp'].min()} to {df_filtered['timestamp'].max()}")
     
     # Handle timezone-aware vs timezone-naive datetime comparison
     latest_dt = latest_timestamp.to_pydatetime()
@@ -108,10 +121,17 @@ def refresh_training_data() -> Path:
         now_dt = datetime.now()
     
     data_age_days = (now_dt - latest_dt).days
-    print(f"  Data age: {data_age_days} days")
+    print(f"  Data freshness: {data_age_days} days old")
     print()
     
-    return DATA_PATH
+    # Save filtered dataset (overwrite original for retraining)
+    # In production, you might want to keep both full and filtered versions
+    filtered_path = DATA_PATH.parent / "crypto_training_data_filtered.parquet"
+    df_filtered.to_parquet(filtered_path, index=False)
+    print(f"✓ Saved rolling window dataset: {filtered_path}")
+    print()
+    
+    return filtered_path
 
 
 # ============================================================================

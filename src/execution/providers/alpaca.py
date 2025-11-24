@@ -235,21 +235,24 @@ class AlpacaProvider(ExecutionProvider):
             # If notional is provided, we need to calculate qty from current price
             if notional is not None and qty is None:
                 try:
-                    # Fetch current quote to get the price
-                    quote = self.api.get_latest_quote(symbol)
-                    if quote:
-                        # Use bid price for sells, ask price for buys
-                        if order.side == OrderSide.SELL:
-                            current_price = float(quote.bp)  # bid price
+                    # Try to get last quote first (more accurate for current price)
+                    try:
+                        quote = self.api.get_last_quote(symbol)
+                        if quote:
+                            # Use bid price for sells, ask price for buys
+                            if order.side == OrderSide.SELL:
+                                current_price = float(quote.bp)  # bid price
+                            else:
+                                current_price = float(quote.ap)  # ask price
+                            
+                            # Calculate quantity from notional
+                            qty = notional / current_price
+                            print(f"  Calculated qty from quote: ${notional:.2f} / ${current_price:.2f} = {qty:.9f}")
                         else:
-                            current_price = float(quote.ap)  # ask price
-                        
-                        # Calculate quantity from notional
-                        qty = notional / current_price
-                        print(f"  Calculated qty from notional: ${notional:.2f} / ${current_price:.2f} = {qty:.9f}")
-                    else:
+                            raise AttributeError("Quote is None")
+                    except (AttributeError, KeyError):
                         # Fallback: try to get last trade price
-                        last_trade = self.api.get_latest_trade(symbol)
+                        last_trade = self.api.get_last_trade(symbol)
                         if last_trade:
                             current_price = float(last_trade.price)
                             qty = notional / current_price

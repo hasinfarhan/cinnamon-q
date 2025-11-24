@@ -32,9 +32,10 @@ from stable_baselines3.common.callbacks import (
 )
 from stable_baselines3.common.monitor import Monitor
 
-# Import environment directly to avoid dependency chain
+# Import environment and data loader directly to avoid dependency chain
 sys.path.insert(0, str(project_root / "src" / "strategy" / "rl"))
 from fast_env import FastCryptoEnv
+from data_loader import prepare_training_data
 
 
 def _check_tensorboard():
@@ -46,21 +47,23 @@ def _check_tensorboard():
         return False
 
 
-def make_env(data_path: Path):
+def make_env_factory(data_arrays: dict):
     """
-    Factory function for creating environments.
+    Factory function for creating environments with preprocessed data.
     
     This is required for SubprocVecEnv. Each process will call this
-    to create its own environment instance.
+    to create its own environment instance. The data_arrays are passed
+    directly, avoiding redundant file I/O and processing.
     
     Args:
-        data_path: Path to crypto_training_data.parquet
+        data_arrays: Preprocessed data dictionary from prepare_training_data()
     
     Returns:
-        FastCryptoEnv instance
+        Factory function that creates FastCryptoEnv instances
     """
     def _init():
-        env = FastCryptoEnv(data_path=data_path)
+        # Create environment with preprocessed data (no file I/O!)
+        env = FastCryptoEnv(data_arrays=data_arrays)
         return env
     return _init
 
@@ -98,6 +101,21 @@ def main():
     model_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
     tensorboard_dir.mkdir(parents=True, exist_ok=True)
+    
+    # --- LOAD DATA ONCE (Main Process) ---
+    print("Step 1: Loading and preprocessing data (Main Process)...")
+    start_data_load = time.time()
+    
+    try:
+        data_arrays = prepare_training_data(data_path)
+        data_load_time = time.time() - start_data_load
+        print(f"✅ Data loaded in {data_load_time:.2f}s")
+        print()
+    except Exception as e:
+        print(f"✗ Error loading data: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
     
     # Verify data exists
     if not data_path.exists():

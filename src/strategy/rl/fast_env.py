@@ -29,6 +29,7 @@ class FastCryptoEnv(gym.Env):
     def __init__(
         self,
         data_path: Optional[Path] = None,
+        data_arrays: Optional[Dict] = None,
         lookback_window: int = 30,
         initial_cash: float = 100000.0
     ):
@@ -36,24 +37,43 @@ class FastCryptoEnv(gym.Env):
         Initialize the fast crypto trading environment.
         
         Args:
-            data_path: Path to crypto_training_data.parquet
+            data_path: Path to crypto_training_data.parquet (used if data_arrays is None)
+            data_arrays: Preprocessed data dictionary with keys:
+                - 'returns_array': [n_steps, n_assets] float32
+                - 'volatility_array': [n_steps, n_assets] float32
+                - 'commit_array': [n_steps, n_assets] float32
+                - 'utility_array': [n_steps, n_assets] float32
+                - 'price_array': [n_steps, n_assets] float32
+                - 'asset_list': List of asset symbols
+                - 'timestamps': List of timestamps
             lookback_window: Number of days for Sortino calculation
             initial_cash: Starting portfolio value
         """
         super().__init__()
         
-        # Set data path
-        if data_path is None:
-            project_root = Path(__file__).parent.parent.parent.parent
-            data_path = project_root / "data" / "processed" / "crypto_training_data.parquet"
-        
-        self.data_path = data_path
         self.lookback_window = lookback_window
         self.initial_cash = initial_cash
         
-        # Load and preprocess data into numpy arrays
-        print("📊 Loading and optimizing crypto training data...")
-        self._load_and_optimize()
+        # Use preprocessed data if provided, otherwise load from file
+        if data_arrays is not None:
+            # Lightweight initialization: use preprocessed arrays
+            self.returns_array = data_arrays['returns_array']
+            self.volatility_array = data_arrays['volatility_array']
+            self.commit_array = data_arrays['commit_array']
+            self.utility_array = data_arrays['utility_array']
+            self.price_array = data_arrays['price_array']
+            self.asset_list = data_arrays['asset_list']
+            self.timestamps = data_arrays['timestamps']
+            self.n_steps = len(self.timestamps)
+        else:
+            # Legacy mode: load from file (for backward compatibility)
+            if data_path is None:
+                project_root = Path(__file__).parent.parent.parent.parent
+                data_path = project_root / "data" / "processed" / "crypto_training_data.parquet"
+            
+            self.data_path = data_path
+            print("📊 Loading and optimizing crypto training data...")
+            self._load_and_optimize()
         
         # Get unique assets
         self.assets = sorted(self.asset_list)

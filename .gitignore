@@ -139,12 +139,31 @@ dmypy.json
 *.pkl
 *.pickle
 
-# Model files
+# Model files (too large for git, use artifact storage)
 *.joblib
 *.model
 *.pkl
+*.pickle
 *.h5
+*.hdf5
 *.pb
+*.zip  # PPO model files from stable-baselines3
+*.pt   # PyTorch models
+*.pth  # PyTorch models
+*.ckpt # Checkpoint files
+*.onnx # ONNX models
+
+# Model directories (keep structure, ignore contents)
+models/**/*.zip
+models/**/*.pkl
+models/**/*.h5
+models/**/*.pt
+models/**/*.pth
+models/**/*.ckpt
+models/**/*.onnx
+!models/.gitkeep
+!models/**/.gitkeep
+!models/**/*.md
 
 # Jupyter notebook outputs
 *.ipynb

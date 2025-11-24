@@ -345,14 +345,25 @@ def main():
     
     print()
     
-    # Step 2: Process each crypto in the universe
-    print("Step 2: Processing crypto universe...")
-    print(f"  Universe: {', '.join(CRYPTO_UNIVERSE.keys())}")
+    # Step 2: Load crypto universe from CSV
+    print("Step 2: Loading crypto universe from CSV...")
+    try:
+        crypto_universe = load_crypto_universe()
+        print(f"  ✓ Loaded {len(crypto_universe)} assets from {CRYPTO_UNIVERSE_CSV}")
+        print(f"  Assets: {', '.join(sorted(crypto_universe.keys()))}")
+    except FileNotFoundError as e:
+        print(f"❌ {e}")
+        sys.exit(1)
+    print()
+    
+    # Step 3: Process each crypto in the universe
+    print("Step 3: Processing crypto universe...")
+    print(f"  Universe: {len(crypto_universe)} assets")
     print()
     
     all_data = []
     
-    for ticker, mapping in CRYPTO_UNIVERSE.items():
+    for ticker, mapping in crypto_universe.items():
         print(f"Processing {ticker} ({mapping['alpaca']})...")
         
         # Fetch price history (15Min bars for high-frequency trading)

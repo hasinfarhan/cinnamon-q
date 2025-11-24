@@ -267,13 +267,21 @@ class AlpacaProvider(ExecutionProvider):
                         response.raise_for_status()
                         data = response.json()
                         
-                        if crypto_symbol in data.get("bars", {}):
-                            latest_bar = data["bars"][crypto_symbol][0]
-                            current_price = float(latest_bar["c"])  # close price
-                            qty = notional / current_price
-                            print(f"  Calculated qty from crypto bar: ${notional:.2f} / ${current_price:.2f} = {qty:.9f}")
-                        else:
+                        # The API returns: {"bars": {"BTC/USD": {"c": price, ...}}}
+                        # Note: latest/bars returns a dict, not a list
+                        if crypto_symbol not in data.get("bars", {}):
+                            # Try to see what we got
+                            print(f"  ⚠ Debug: Available symbols in response: {list(data.get('bars', {}).keys())}")
                             raise ValueError(f"No price data returned for {crypto_symbol}")
+                        
+                        latest_bar = data["bars"][crypto_symbol]  # This is a dict, not a list
+                        current_price = float(latest_bar["c"])  # close price
+                        
+                        if current_price <= 0:
+                            raise ValueError(f"Invalid price ({current_price}) returned for {crypto_symbol}")
+                        
+                        qty = notional / current_price
+                        print(f"  Calculated qty from crypto bar: ${notional:.2f} / ${current_price:.2f} = {qty:.9f}")
                     else:
                         # For stocks, use get_barset
                         try:

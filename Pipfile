@@ -38,6 +38,7 @@ pycoingecko = "*"
 tensorboard = "*"
 sqlalchemy = "*"
 rich = "*"
+pyportfolioopt = "*"
 
 [dev-packages]
 

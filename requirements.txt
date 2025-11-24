@@ -59,6 +59,9 @@ six>=1.16.0  # Required by urllib3 and alpaca-trade-api for Python 3.12 compatib
 # Crypto data sources
 pycoingecko>=3.1.0  # CoinGecko API for crypto fundamentals
 
+# Portfolio optimization
+pyportfolioopt>=1.5.4  # Mean-variance optimization and risk models
+
 # Database persistence
 sqlalchemy>=2.0.0  # Modern ORM for SQLite persistence
 

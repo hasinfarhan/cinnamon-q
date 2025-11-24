@@ -33,6 +33,13 @@ execution:
   provider: "alpaca"
   paper: true  # Use paper trading (set to false for live trading)
 
+# Optimizer configuration (Bicameral Brain v2.1)
+optimizer:
+  method: "max_sharpe"  # Options: "max_sharpe", "min_volatility", "efficient_risk", "efficient_return"
+  risk_aversion: 1.0  # For quadratic utility (higher = more risk averse)
+  lookback_days: 90  # Days of history for covariance matrix calculation
+  risk_free_rate: 0.0  # Risk-free rate for Sharpe ratio calculation (0.0 for crypto)
+
 # Data configuration (for data fetcher)
 data:
   tickers:

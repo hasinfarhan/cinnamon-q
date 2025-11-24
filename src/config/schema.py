@@ -102,6 +102,38 @@ class DataConfig(BaseModel):
     model_config = {"frozen": True}
 
 
+class OptimizerConfig(BaseModel):
+    """
+    Portfolio optimizer configuration (Bicameral Brain v2.1).
+    
+    Attributes:
+        method: Optimization method (max_sharpe, min_volatility, etc.)
+        risk_aversion: Risk aversion parameter for quadratic utility
+        lookback_days: Days of history for covariance calculation
+        risk_free_rate: Risk-free rate for Sharpe ratio calculation
+    """
+    method: str = Field(
+        default="max_sharpe",
+        description="Optimization method: max_sharpe, min_volatility, efficient_risk, efficient_return"
+    )
+    risk_aversion: float = Field(
+        default=1.0,
+        ge=0.0,
+        description="Risk aversion parameter (higher = more risk averse)"
+    )
+    lookback_days: int = Field(
+        default=90,
+        ge=7,
+        description="Days of history for covariance matrix calculation (minimum 7)"
+    )
+    risk_free_rate: float = Field(
+        default=0.0,
+        description="Risk-free rate for Sharpe ratio calculation (0.0 for crypto)"
+    )
+    
+    model_config = {"frozen": True}
+
+
 class AppConfig(BaseModel):
     """
     Root application configuration model.
@@ -113,6 +145,7 @@ class AppConfig(BaseModel):
         system: System-level configuration
         strategies: List of strategy configurations
         execution: Execution engine configuration
+        optimizer: Portfolio optimizer configuration (optional)
         data: Data fetching configuration (optional)
     """
     system: SystemConfig = Field(
@@ -126,6 +159,10 @@ class AppConfig(BaseModel):
     execution: ExecutionConfig = Field(
         default_factory=lambda: ExecutionConfig(),
         description="Execution engine configuration"
+    )
+    optimizer: Optional[OptimizerConfig] = Field(
+        default=None,
+        description="Portfolio optimizer configuration (optional, for Bicameral Brain)"
     )
     data: Optional[DataConfig] = Field(
         default=None,

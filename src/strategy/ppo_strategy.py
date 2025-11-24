@@ -18,6 +18,8 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from execution.models import TargetPortfolio
+from strategy.optimizer.mean_variance import MeanVarianceOptimizer
+from strategy.risk.covariance import CovarianceCalculator
 from strategy.rl.fast_env import FastCryptoEnv
 
 
@@ -76,7 +78,8 @@ class PPOStrategy:
         vec_norm_path: Path,
         data_path: Path,
         asset_list: Optional[list] = None,
-        provider: Optional[any] = None
+        provider: Optional[any] = None,
+        optimizer_config: Optional[Dict] = None
     ):
         """
         Initialize the PPO strategy.
@@ -194,6 +197,24 @@ class PPOStrategy:
         print(f"✓ Normalization statistics loaded and frozen")
         print(f"  Assets: {self.asset_list}")
         print(f"  Observation space: {self.norm_env.observation_space.shape}")
+        
+        # Initialize Bicameral Brain components (v2.1)
+        # Optimizer config defaults (can be overridden)
+        opt_config = optimizer_config or {}
+        lookback_days = opt_config.get("lookback_days", 90)
+        method = opt_config.get("method", "max_sharpe")
+        risk_free_rate = opt_config.get("risk_free_rate", 0.0)
+        
+        # Initialize Quant Risk Manager (Covariance Calculator)
+        self.covariance_calc = CovarianceCalculator(lookback_days=lookback_days)
+        print(f"✓ Covariance Calculator initialized (lookback: {lookback_days} days)")
+        
+        # Initialize Optimizer (The Negotiator)
+        self.optimizer = MeanVarianceOptimizer(
+            method=method,
+            risk_free_rate=risk_free_rate
+        )
+        print(f"✓ Mean-Variance Optimizer initialized (method: {method})")
     
     def _prepare_observation(self, df: pd.DataFrame) -> np.ndarray:
         """
@@ -365,20 +386,22 @@ class PPOStrategy:
     
     def get_target_portfolio(self, portfolio_value: float = 100000.0) -> TargetPortfolio:
         """
-        Generate target portfolio using the trained PPO agent.
+        Generate target portfolio using the Bicameral Brain architecture (v2.1).
         
-        This method now uses live market data from Alpaca API instead of
-        static parquet files, ensuring the agent sees current prices.
+        This method implements the "Analyst vs. Risk Manager" model:
+        1. ML Analyst (PPO): Outputs raw alpha scores (expected returns)
+        2. Quant Risk Manager: Calculates covariance matrix
+        3. Optimizer: Solves mean-variance optimization with Halal constraints
         
         Args:
             portfolio_value: Current portfolio value (for normalization)
                             Default: 100000.0 (initial cash)
         
         Returns:
-            TargetPortfolio with weights for each asset
+            TargetPortfolio with optimized weights
         
         Raises:
-            ValueError: If prediction fails or weights are invalid
+            ValueError: If prediction fails or optimization fails
         """
         # Fetch live data (or fallback to static if provider not set)
         df = self._fetch_live_data()
@@ -390,84 +413,99 @@ class PPOStrategy:
         # This ensures the agent sees data in the same format it was trained on
         norm_obs = self.norm_env.normalize_obs(raw_obs)
         
-        # Predict action (portfolio weights)
+        # ============================================================
+        # STEP A: ML Analyst (PPO) - Get Raw Alpha Scores
+        # ============================================================
+        print("🧠 PPO Analyst: Generating expected returns...")
+        
+        # Predict action (raw output from PPO - DO NOT normalize/clip here!)
         # deterministic=True for consistent behavior in production
         action, _ = self.model.predict(norm_obs, deterministic=True)
         
-        # Post-process action
-        # Action is a vector of weights: [Asset1, Asset2, ..., AssetN, Cash]
+        # Flatten action array
         action = action.flatten()
         
-        # Apply Halal constraints
-        # 1. Ensure weights are positive (Long Only)
-        action = np.clip(action, 0.0, 1.0)
-        
-        # 2. Normalize to sum to 1.0 (No Leverage)
-        action_sum = np.sum(action)
-        if action_sum > 1e-8:
-            action = action / action_sum
-        else:
-            # All zeros or invalid, default to cash
-            action = np.zeros(len(action))
-            action[-1] = 1.0
-        
-        # Map weights to asset dictionary
-        # CRITICAL: Convert asset symbols to Alpaca-compliant format (add /USD for crypto)
-        # This ensures the Execution Engine recognizes them as crypto and uses correct API endpoints
-        # Also filter out assets that don't have data in the fetched DataFrame
+        # Convert raw PPO action to expected returns (alpha scores)
+        # CRITICAL: Do NOT normalize/clip the actions here.
+        # We treat the raw output as "expected returns" (μ).
         available_assets = set(df['ticker'].unique()) if 'ticker' in df.columns else set()
-        weights_dict = {}
-        filtered_weights = []  # Track filtered weights for renormalization
+        expected_returns_dict = {}
         
         # Action array: [Asset1, Asset2, ..., AssetN, Cash]
-        # self.asset_list contains only assets (no cash), so len(action) = len(asset_list) + 1
+        # self.asset_list contains only assets (no cash)
         for i, asset in enumerate(self.asset_list):
-            weight = float(action[i])
-            if weight > 1e-6:  # Only include non-negligible weights
-                # Check if asset has data in the fetched DataFrame
-                # Strip /USD for comparison (data uses base symbols like "BTC")
-                base_asset = asset.replace('/USD', '') if '/USD' in asset else asset
-                if base_asset not in available_assets:
-                    # Asset has no data, skip it (don't allocate to assets without data)
-                    print(f"  ⚠ Skipping {asset}: No data available")
-                    filtered_weights.append(weight)
-                    continue
-                
-                # Convert to Alpaca crypto format: "BTC" -> "BTC/USD"
-                # This allows the Execution Engine to properly identify crypto vs stocks
-                if '/' not in asset and not asset.endswith('USD'):
-                    # Add /USD suffix for crypto symbols
-                    alpaca_symbol = f"{asset}/USD"
-                else:
-                    # Already in correct format
-                    alpaca_symbol = asset
-                weights_dict[alpaca_symbol] = weight
+            # Strip /USD for comparison (data uses base symbols like "BTC")
+            base_asset = asset.replace('/USD', '') if '/USD' in asset else asset
+            
+            # Only include assets that have data
+            if base_asset not in available_assets:
+                continue
+            
+            # Get raw score from PPO (this is the "expected return")
+            raw_score = float(action[i])
+            
+            # Store as expected return (use base symbol for now, will convert later)
+            expected_returns_dict[base_asset] = raw_score
         
-        # Renormalize weights if we filtered out some assets
-        # The remaining weight (1.0 - sum(weights)) goes to cash
-        if filtered_weights:
-            filtered_total = sum(filtered_weights)
-            if weights_dict:
-                # Renormalize remaining weights to preserve relative allocation
-                current_total = sum(weights_dict.values())
-                if current_total > 1e-8:
-                    # Scale up remaining weights proportionally
-                    scale_factor = (current_total + filtered_total) / current_total
-                    for symbol in weights_dict:
-                        weights_dict[symbol] = weights_dict[symbol] * scale_factor
+        # Convert to Series for optimizer
+        expected_returns = pd.Series(expected_returns_dict)
         
-        # Cash weight is the last element
-        # Note: TargetPortfolio doesn't have a cash field, but we can
-        # represent it as ensuring weights sum to <= 1.0
-        # The remaining weight (1.0 - sum(weights)) is implicitly cash
+        if expected_returns.empty:
+            print("  ⚠ Warning: No assets with data, returning empty portfolio")
+            return TargetPortfolio(weights={})
         
-        # Construct and return TargetPortfolio
+        print(f"  ✓ PPO Raw Scores: {dict(expected_returns.head(5))}...")
+        
+        # ============================================================
+        # STEP B: Quant Risk Manager - Calculate Covariance Matrix
+        # ============================================================
+        print("📊 Quant Risk Manager: Calculating covariance matrix...")
+        
+        # Prepare price DataFrame for covariance calculation
+        # Need format: Index=Date, Columns=Tickers, Values=Close prices
+        price_pivot = df.pivot_table(
+            index='timestamp',
+            columns='ticker',
+            values='close',
+            aggfunc='first'
+        )
+        
+        # Sort by timestamp (ascending)
+        price_pivot = price_pivot.sort_index()
+        
+        # Filter to only assets we have expected returns for
+        common_assets = price_pivot.columns.intersection(expected_returns.index)
+        if len(common_assets) == 0:
+            raise ValueError("No common assets between expected returns and price data")
+        
+        price_pivot = price_pivot[common_assets]
+        expected_returns = expected_returns[common_assets]
+        
+        # Calculate covariance matrix
         try:
-            target = TargetPortfolio(weights=weights_dict)
+            cov_matrix = self.covariance_calc.get_covariance_matrix(price_pivot)
+            print(f"  ✓ Covariance matrix calculated: {cov_matrix.shape}")
+        except Exception as e:
+            print(f"  ⚠ Warning: Covariance calculation failed ({e}), using equal weights")
+            # Fallback to equal weights if covariance fails
+            n_assets = len(common_assets)
+            weights_dict = {f"{asset}/USD": 1.0 / n_assets for asset in common_assets}
+            return TargetPortfolio(weights=weights_dict)
+        
+        # ============================================================
+        # STEP C: Optimizer (The Negotiator) - Solve MVO Problem
+        # ============================================================
+        print("⚖️ Optimizer: Solving mean-variance optimization...")
+        
+        try:
+            # Solve the optimization problem
+            target = self.optimizer.optimize(expected_returns, cov_matrix)
+            print(f"  ✓ Optimization complete: {len(target.weights)} assets selected")
             return target
         except Exception as e:
-            # If validation fails, return empty portfolio (100% cash)
-            print(f"⚠ Warning: TargetPortfolio validation failed: {e}")
-            print(f"  Returning empty portfolio (100% cash)")
-            return TargetPortfolio(weights={})
+            print(f"  ⚠ Warning: Optimization failed ({e}), using equal weights")
+            # Fallback to equal weights if optimization fails
+            n_assets = len(common_assets)
+            weights_dict = {f"{asset}/USD": 1.0 / n_assets for asset in common_assets}
+            return TargetPortfolio(weights=weights_dict)
 

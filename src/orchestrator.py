@@ -136,6 +136,16 @@ class BotOrchestrator:
             if not data_path.is_absolute():
                 data_path = project_root / data_path
             
+            # Extract optimizer config (for Bicameral Brain v2.1)
+            optimizer_config = None
+            if self.config.optimizer:
+                optimizer_config = {
+                    "method": self.config.optimizer.method,
+                    "risk_aversion": self.config.optimizer.risk_aversion,
+                    "lookback_days": self.config.optimizer.lookback_days,
+                    "risk_free_rate": self.config.optimizer.risk_free_rate
+                }
+            
             # Create and return PPOStrategy
             # Inject the trading engine's provider for live data fetching
             # This enables the "Live Data Bridge" - the strategy will fetch
@@ -144,7 +154,8 @@ class BotOrchestrator:
                 model_path=model_path,
                 vec_norm_path=vec_norm_path,
                 data_path=data_path,
-                provider=self.trading_engine.provider  # Enable live data fetching
+                provider=self.trading_engine.provider,  # Enable live data fetching
+                optimizer_config=optimizer_config  # Bicameral Brain optimizer config
             )
         
         # Handle traditional StrategyEngine (momentum, etc.)

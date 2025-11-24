@@ -28,6 +28,13 @@ from pathlib import Path
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root / "src"))
 
+# Import compatibility fixes BEFORE any other imports
+try:
+    from compat import _patch_urllib3
+    _patch_urllib3()
+except ImportError:
+    pass
+
 from orchestrator import BotOrchestrator
 
 

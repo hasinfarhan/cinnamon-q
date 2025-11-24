@@ -4,6 +4,17 @@ Alpaca Trading API Provider Implementation.
 This module implements the ExecutionProvider interface using the Alpaca API.
 """
 
+# Import compatibility fixes BEFORE alpaca-trade-api
+import sys
+from pathlib import Path
+project_root = Path(__file__).parent.parent.parent.parent
+sys.path.insert(0, str(project_root / "src"))
+try:
+    from compat import _patch_urllib3
+    _patch_urllib3()
+except ImportError:
+    pass
+
 import os
 from datetime import datetime
 from typing import Dict

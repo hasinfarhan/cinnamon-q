@@ -350,24 +350,38 @@ def main():
     # --- TEST PREDICTIONS ---
     print("Step 7: Testing model predictions...")
     
-    # Load normalization for consistent testing
-    test_env = FastCryptoEnv(data_path=data_path)
-    test_env = DummyVecEnv([lambda: test_env])
+    # Create test environment using memory-mapped data (fast, matches training)
+    def make_test_env():
+        env = FastCryptoEnv(data_config=data_config)
+        return env
+    
+    test_env = DummyVecEnv([make_test_env])
+    
+    # Load normalization stats (same as training)
     test_env = VecNormalize.load(str(vec_normalize_path), test_env)
+    test_env.training = False
+    test_env.norm_reward = False
     
     obs = test_env.reset()
     
     print("  Sample predictions (first 5 steps):")
     for i in range(5):
+        # Predict action (model expects normalized observations)
         action, _states = model.predict(obs, deterministic=True)
         
-        # Normalize for display
-        action = action.flatten()  # Ensure 1D array
-        action_sum = action.sum()
-        if action_sum > 0:
-            normalized_weights = action / action_sum
+        # Action from VecEnv is shape (1, n_assets+1), need to ensure correct format
+        # VecEnv will handle the batching, but we need to ensure it's the right shape
+        if isinstance(action, np.ndarray):
+            action_flat = action.flatten()
         else:
-            normalized_weights = action
+            action_flat = np.array(action).flatten()
+        
+        # Normalize for display
+        action_sum = action_flat.sum()
+        if action_sum > 0:
+            normalized_weights = action_flat / action_sum
+        else:
+            normalized_weights = action_flat
         
         # Convert to list for safe formatting
         weights_list = normalized_weights.tolist()
@@ -376,10 +390,12 @@ def main():
         print(f"      Portfolio weights: {weights_list}")
         print(f"      Cash weight: {weights_list[-1]:.3f}")
         
+        # Step environment (VecEnv handles action batching)
         obs, reward, done, info = test_env.step(action)
         
         if done[0]:  # DummyVecEnv returns done as array
-            break
+            print("      Episode ended, resetting...")
+            obs = test_env.reset()
     
     print()
     

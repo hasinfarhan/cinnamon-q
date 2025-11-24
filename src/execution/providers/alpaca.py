@@ -16,10 +16,12 @@ except ImportError:
     pass
 
 import os
-from datetime import datetime
-from typing import Dict
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional
 
 import alpaca_trade_api as tradeapi
+import pandas as pd
+import requests
 from dotenv import load_dotenv
 
 from ..interface import ExecutionProvider
@@ -185,6 +187,157 @@ class AlpacaProvider(ExecutionProvider):
         except Exception as e:
             print(f"✗ Error cancelling orders: {str(e)}")
             # Don't raise - allow test to continue even if cancellation fails
+    
+    def fetch_crypto_history(
+        self,
+        symbols: List[str],
+        timeframe: str = "1Hour",
+        hours: int = 500,
+        include_fundamentals: bool = False
+    ) -> pd.DataFrame:
+        """
+        Fetch recent crypto price history from Alpaca Data API.
+        
+        This method is used by the Live Data Bridge to fetch real-time market data
+        for PPO strategy inference. It fetches enough history (e.g., 500 hours) to
+        calculate rolling features like volatility and returns correctly.
+        
+        Args:
+            symbols: List of crypto symbols in Alpaca format (e.g., ["BTC/USD", "ETH/USD"])
+            timeframe: Bar timeframe (default: "1Hour")
+            hours: Number of hours of history to fetch (default: 500 for feature calculation)
+            include_fundamentals: If True, includes synthetic fundamental data (for compatibility)
+        
+        Returns:
+            pd.DataFrame: DataFrame with columns matching training data format:
+                - timestamp: Datetime index
+                - ticker: Asset symbol (e.g., "BTC")
+                - open, high, low, close, volume: OHLCV data
+                - commit_count_4_weeks: Synthetic fundamental (if include_fundamentals=True)
+                - utility_score: Synthetic sentiment (if include_fundamentals=True)
+        
+        Raises:
+            RuntimeError: If not connected to Alpaca
+            ValueError: If symbols list is empty
+        """
+        if not self.api:
+            raise RuntimeError("Not connected to Alpaca. Call connect() first.")
+        
+        if not symbols:
+            raise ValueError("Symbols list cannot be empty")
+        
+        # Use Alpaca Data API directly (not trading API)
+        data_url = "https://data.alpaca.markets"
+        headers = {
+            "APCA-API-KEY-ID": self.api_key,
+            "APCA-API-SECRET-KEY": self.secret_key
+        }
+        
+        # Calculate start and end dates
+        end_date = datetime.now()
+        start_date = end_date - timedelta(hours=hours)
+        
+        all_dataframes = []
+        
+        for symbol in symbols:
+            try:
+                # Ensure symbol is in BTC/USD format for Data API
+                if '/' not in symbol:
+                    # Convert "BTCUSD" -> "BTC/USD"
+                    crypto_symbol = f"{symbol[:-3]}/{symbol[-3:]}"
+                else:
+                    crypto_symbol = symbol
+                
+                # Use Alpaca Data API for crypto bars
+                url = f"{data_url}/v1beta3/crypto/us/bars"
+                params = {
+                    "symbols": crypto_symbol,
+                    "timeframe": timeframe,
+                    "start": start_date.strftime("%Y-%m-%dT%H:%M:%S-00:00"),
+                    "end": end_date.strftime("%Y-%m-%dT%H:%M:%S-00:00"),
+                    "limit": 10000,  # Max per request
+                }
+                
+                all_bars = []
+                page_token = None
+                
+                while True:
+                    current_params = params.copy()
+                    if page_token:
+                        current_params["page_token"] = page_token
+                    
+                    response = requests.get(url, headers=headers, params=current_params)
+                    response.raise_for_status()
+                    data = response.json()
+                    
+                    bars_dict = data.get("bars", {})
+                    bars = bars_dict.get(crypto_symbol, [])
+                    
+                    if not bars:
+                        break
+                    
+                    all_bars.extend(bars)
+                    
+                    # Check for more pages
+                    page_token = data.get("next_page_token")
+                    if not page_token:
+                        break
+                
+                if not all_bars:
+                    print(f"  ⚠ Warning: No data returned for {crypto_symbol}")
+                    continue
+                
+                # Convert to DataFrame
+                bars_df = pd.DataFrame(all_bars)
+                
+                # Rename columns to match training data format
+                bars_df = bars_df.rename(columns={
+                    "t": "timestamp",
+                    "o": "open",
+                    "h": "high",
+                    "l": "low",
+                    "c": "close",
+                    "v": "volume"
+                })
+                
+                # Ensure timestamp is datetime
+                bars_df["timestamp"] = pd.to_datetime(bars_df["timestamp"])
+                
+                # Extract base symbol (e.g., "BTC/USD" -> "BTC") for ticker column
+                base_symbol = crypto_symbol.split('/')[0]
+                bars_df["ticker"] = base_symbol
+                
+                # Add synthetic fundamental columns if requested (for compatibility with training data)
+                if include_fundamentals:
+                    # Use neutral values - in production, you'd fetch real fundamentals
+                    bars_df["commit_count_4_weeks"] = 100.0  # Placeholder
+                    bars_df["utility_score"] = 0.5  # Neutral sentiment
+                else:
+                    # Still add columns but with NaN (will be handled in feature engineering)
+                    bars_df["commit_count_4_weeks"] = None
+                    bars_df["utility_score"] = None
+                
+                # Sort by timestamp
+                bars_df = bars_df.sort_values("timestamp").reset_index(drop=True)
+                
+                all_dataframes.append(bars_df)
+                print(f"  ✓ Fetched {len(bars_df)} bars for {crypto_symbol}")
+                
+            except Exception as e:
+                print(f"  ✗ Error fetching data for {symbol}: {e}")
+                continue
+        
+        if not all_dataframes:
+            raise ValueError("No data fetched for any symbols")
+        
+        # Combine all DataFrames
+        combined_df = pd.concat(all_dataframes, ignore_index=True)
+        
+        # Sort by timestamp and ticker
+        combined_df = combined_df.sort_values(["timestamp", "ticker"]).reset_index(drop=True)
+        
+        print(f"✓ Fetched {len(combined_df)} total bars for {len(symbols)} symbols")
+        return combined_df
     
     def execute_order(self, order: TradeOrder) -> dict:
         """

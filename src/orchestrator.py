@@ -137,10 +137,14 @@ class BotOrchestrator:
                 data_path = project_root / data_path
             
             # Create and return PPOStrategy
+            # Inject the trading engine's provider for live data fetching
+            # This enables the "Live Data Bridge" - the strategy will fetch
+            # real-time market data instead of using static parquet files
             return PPOStrategy(
                 model_path=model_path,
                 vec_norm_path=vec_norm_path,
-                data_path=data_path
+                data_path=data_path,
+                provider=self.trading_engine.provider  # Enable live data fetching
             )
         
         # Handle traditional StrategyEngine (momentum, etc.)

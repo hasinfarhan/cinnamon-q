@@ -36,7 +36,8 @@ class PPOStrategy:
         model_path: Path,
         vec_norm_path: Path,
         data_path: Path,
-        asset_list: Optional[list] = None
+        asset_list: Optional[list] = None,
+        provider: Optional[any] = None
     ):
         """
         Initialize the PPO strategy.
@@ -44,8 +45,9 @@ class PPOStrategy:
         Args:
             model_path: Path to trained PPO model (.zip file)
             vec_norm_path: Path to VecNormalize statistics (.pkl file)
-            data_path: Path to live market data (parquet file)
+            data_path: Path to training data (parquet file) - used for structure/fallback
             asset_list: List of asset tickers (default: auto-detect from data)
+            provider: Optional ExecutionProvider for fetching live data (if None, uses static data_path)
         
         Raises:
             FileNotFoundError: If model or normalization files don't exist
@@ -53,6 +55,7 @@ class PPOStrategy:
         self.data_path = data_path
         self.model_path = model_path
         self.vec_norm_path = vec_norm_path
+        self.provider = provider  # For live data fetching
         
         # Verify files exist
         if not model_path.exists():
@@ -198,9 +201,66 @@ class PPOStrategy:
         # Reshape to (1, n_features) for batch prediction
         return obs.reshape(1, -1)
     
+    def _fetch_live_data(self) -> pd.DataFrame:
+        """
+        Fetch live market data from Alpaca API.
+        
+        This is the "Live Data Bridge" that ensures the PPO agent sees current
+        market prices instead of stale static data.
+        
+        Returns:
+            pd.DataFrame: DataFrame with same structure as training data
+                Columns: timestamp, ticker, open, high, low, close, volume, 
+                         commit_count_4_weeks, utility_score
+        
+        Raises:
+            RuntimeError: If provider is not set
+            ValueError: If data fetching fails
+        """
+        if self.provider is None:
+            # Fallback to static data if provider not available
+            print("⚠ Warning: No provider set, using static data from parquet file")
+            return pd.read_parquet(self.data_path)
+        
+        # Convert asset list to Alpaca symbols (add /USD if needed)
+        alpaca_symbols = []
+        for asset in self.asset_list:
+            # Strip /USD if present, then add it back for Alpaca
+            base_asset = asset.replace('/USD', '') if '/USD' in asset else asset
+            alpaca_symbols.append(f"{base_asset}/USD")
+        
+        print(f"📡 Fetching live market data for {len(alpaca_symbols)} assets...")
+        
+        # Fetch enough history for feature calculation (500 hours = ~21 days)
+        # This ensures we can calculate rolling volatility and returns correctly
+        df = self.provider.fetch_crypto_history(
+            symbols=alpaca_symbols,
+            timeframe="1Hour",
+            hours=500,  # Enough for rolling features
+            include_fundamentals=False  # We'll use synthetic/neutral values
+        )
+        
+        # Ensure we have the required columns
+        required_cols = ['timestamp', 'ticker', 'open', 'high', 'low', 'close', 'volume']
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            raise ValueError(f"Missing required columns in live data: {missing_cols}")
+        
+        # Fill missing fundamental columns with neutral values (for feature engineering)
+        if 'commit_count_4_weeks' not in df.columns:
+            df['commit_count_4_weeks'] = 100.0  # Neutral placeholder
+        if 'utility_score' not in df.columns:
+            df['utility_score'] = 0.5  # Neutral sentiment
+        
+        print(f"✓ Live data fetched: {len(df)} bars across {df['ticker'].nunique()} assets")
+        return df
+    
     def get_target_portfolio(self, portfolio_value: float = 100000.0) -> TargetPortfolio:
         """
         Generate target portfolio using the trained PPO agent.
+        
+        This method now uses live market data from Alpaca API instead of
+        static parquet files, ensuring the agent sees current prices.
         
         Args:
             portfolio_value: Current portfolio value (for normalization)
@@ -212,8 +272,8 @@ class PPOStrategy:
         Raises:
             ValueError: If prediction fails or weights are invalid
         """
-        # Load live data
-        df = pd.read_parquet(self.data_path)
+        # Fetch live data (or fallback to static if provider not set)
+        df = self._fetch_live_data()
         
         # Prepare raw observation
         raw_obs = self._prepare_observation(df)

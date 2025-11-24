@@ -19,6 +19,11 @@ Complete documentation for Project arynosQ (cinnamon-q).
   - Implementation details
   - Data flow and architecture
   - Testing and troubleshooting
+- **[Automated Retraining Pipeline](phase4_retraining_pipeline.md)**: MLOps for continuous learning
+  - Challenger Protocol architecture
+  - Transfer Learning implementation
+  - Evaluation and deployment logic
+  - Cron job setup and best practices
 
 ### 🧠 HDRL Training & Deployment
 - **[HDRL Training Guide](hdrl_training_guide.md)**: Complete guide for training, versioning, and deploying the Hierarchical Deep Reinforcement Learning agent

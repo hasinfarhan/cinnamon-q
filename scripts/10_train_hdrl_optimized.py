@@ -251,10 +251,12 @@ def main():
     )
     
     # Evaluation callback: Track best model
+    # CRITICAL: Use the same memory-mapped data config to avoid slow parquet loading
     # Create a separate eval environment (single process for consistency)
-    # Wrap in DummyVecEnv first (VecNormalize requires a VecEnv)
+    # Reuse the same make_env_fn factory to ensure fast initialization
     def make_eval_env():
-        env = FastCryptoEnv(data_path=data_path)
+        # Use the same memory-mapped data config (instant load, no parquet I/O)
+        env = FastCryptoEnv(data_config=data_config)
         env = Monitor(env, str(log_dir / "eval"))
         return env
     

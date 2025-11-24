@@ -356,19 +356,19 @@ class NewsFetcher:
         """
         all_headlines = []
         
-        # Try CryptoPanic first (crypto-specific)
+        # Fetch from both sources simultaneously for better coverage
+        # CryptoPanic: Crypto-specific news (better quality for crypto)
+        # yfinance: General market news (broader coverage)
+        
         if self.use_cryptopanic:
+            # Fetch from CryptoPanic (crypto-specific)
             cryptopanic_news = self._fetch_cryptopanic_news(symbol, limit=limit, days_back=days_back)
             all_headlines.extend(cryptopanic_news)
         
-        # If we have enough headlines, return them
-        if len(all_headlines) >= limit:
-            return all_headlines[:limit]
-        
-        # Fallback to yfinance if needed
-        if self.use_yfinance and len(all_headlines) < limit:
-            remaining_limit = limit - len(all_headlines)
-            yfinance_news = self._fetch_yfinance_news(symbol, limit=remaining_limit, days_back=days_back)
+        if self.use_yfinance:
+            # Also fetch from yfinance (general market news)
+            # This provides broader coverage and different perspectives
+            yfinance_news = self._fetch_yfinance_news(symbol, limit=limit, days_back=days_back)
             all_headlines.extend(yfinance_news)
         
         # Remove duplicates (same title) and sort by timestamp

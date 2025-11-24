@@ -387,6 +387,39 @@ class NewsFetcher:
         # Sort by timestamp (newest first)
         unique_headlines.sort(key=lambda x: x["timestamp"], reverse=True)
         
+        # Ensure we get a mix from both sources if available
+        # If we have headlines from multiple sources, try to balance them
+        source_counts = {}
+        for h in unique_headlines:
+            src = h['source']
+            source_counts[src] = source_counts.get(src, 0) + 1
+        
+        if len(source_counts) > 1 and len(unique_headlines) > limit:
+            # We have multiple sources - try to get a balanced mix
+            # Take up to limit/2 from each source, then fill remaining slots
+            per_source_limit = max(limit // 2, 5)
+            balanced = []
+            source_taken = {src: 0 for src in source_counts.keys()}
+            
+            for headline in unique_headlines:
+                src = headline['source']
+                if source_taken[src] < per_source_limit:
+                    balanced.append(headline)
+                    source_taken[src] += 1
+                    if len(balanced) >= limit:
+                        break
+            
+            # Fill remaining slots if we haven't reached limit
+            if len(balanced) < limit:
+                for headline in unique_headlines:
+                    if headline not in balanced:
+                        balanced.append(headline)
+                        if len(balanced) >= limit:
+                            break
+            
+            return balanced[:limit]
+        
+        # Default: return top N by timestamp
         return unique_headlines[:limit]
     
     def get_headlines_dataframe(

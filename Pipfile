@@ -35,6 +35,7 @@ alpaca-trade-api = "*"
 pydantic = "*"
 pyarrow = "*"
 pycoingecko = "*"
+tensorboard = "*"
 
 [dev-packages]
 

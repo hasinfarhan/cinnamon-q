@@ -74,7 +74,8 @@ class NewsFetcher:
             headlines = []
             cutoff_date = None
             if days_back:
-                cutoff_date = datetime.now() - timedelta(days=days_back)
+                # Use timezone-aware datetime for comparison
+                cutoff_date = datetime.now(datetime.now().astimezone().tzinfo) - timedelta(days=days_back)
             
             for item in news_list[:limit]:
                 # Extract timestamp - yfinance uses multiple formats
@@ -119,8 +120,20 @@ class NewsFetcher:
                     continue
                 
                 # Filter by date if specified
-                if cutoff_date and timestamp < cutoff_date:
-                    continue
+                # Handle timezone-aware vs timezone-naive comparison
+                if cutoff_date:
+                    # Make cutoff_date timezone-aware if timestamp is timezone-aware
+                    if timestamp.tzinfo is not None and cutoff_date.tzinfo is None:
+                        # Make cutoff_date timezone-aware (use UTC)
+                        from datetime import timezone
+                        cutoff_date = cutoff_date.replace(tzinfo=timezone.utc)
+                    elif timestamp.tzinfo is None and cutoff_date.tzinfo is not None:
+                        # Make timestamp timezone-naive for comparison
+                        timestamp = timestamp.replace(tzinfo=None)
+                        cutoff_date = cutoff_date.replace(tzinfo=None)
+                    
+                    if timestamp < cutoff_date:
+                        continue
                 
                 # Extract title - try multiple locations
                 title = item.get('title', '')

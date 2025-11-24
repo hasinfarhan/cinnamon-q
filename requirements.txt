@@ -32,6 +32,9 @@ matplotlib>=3.5.0
 seaborn>=0.11.0
 plotly>=5.0.0
 
+# Explainability
+shap>=0.43.0  # SHAP (Shapley Additive Explanations) for model interpretability
+
 # Dashboard
 streamlit>=1.28.0  # Web-based dashboard framework
 streamlit-autorefresh>=0.0.6  # Auto-refresh capability

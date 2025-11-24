@@ -52,6 +52,21 @@ Brief description of the project, its objectives, and expected outcomes.
 4. Train models using scripts in `src/models/`
 5. Generate reports in `reports/`
 
+## Documentation
+
+### Core Guides
+
+- **[HDRL Training Guide](docs/hdrl_training_guide.md)**: Complete guide for training, versioning, and deploying the HDRL agent
+- **[Model Management](docs/model_management.md)**: Best practices for model versioning, storage, and deployment
+- **[Architecture](docs/architecture.md)**: System architecture and component overview
+- **[Project Structure](docs/project_structure.md)**: Directory structure and file organization
+
+### Quick Links
+
+- **Training**: See [HDRL Training Guide](docs/hdrl_training_guide.md#training-workflow)
+- **Model Versioning**: See [Model Management](docs/model_management.md#versioning-workflow)
+- **Troubleshooting**: See [HDRL Training Guide - Troubleshooting](docs/hdrl_training_guide.md#troubleshooting)
+
 ## Contributing
 1. Fork the repository
 2. Create a feature branch

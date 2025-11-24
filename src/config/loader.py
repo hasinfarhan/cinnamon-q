@@ -129,7 +129,7 @@ def _validate_config(config: AppConfig) -> None:
         )
     
     # Validate signal types (basic check)
-    valid_signals = ['momentum']  # Can be extended
+    valid_signals = ['momentum', 'ppo']  # Can be extended
     for strategy in config.strategies:
         if strategy.signal not in valid_signals:
             # Warning, not error - allow extensibility

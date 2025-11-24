@@ -30,7 +30,8 @@ Brief description of the project, its objectives, and expected outcomes.
 ## Getting Started
 
 ### Prerequisites
-- Python 3.8+
+- **Python 3.11** (recommended) or Python 3.8-3.10
+  - ⚠️ Python 3.12 has compatibility issues with `alpaca-trade-api` (see [Troubleshooting](docs/troubleshooting.md))
 - pip or conda
 
 ### Installation
@@ -65,7 +66,7 @@ Brief description of the project, its objectives, and expected outcomes.
 
 - **Training**: See [HDRL Training Guide](docs/hdrl_training_guide.md#training-workflow)
 - **Model Versioning**: See [Model Management](docs/model_management.md#versioning-workflow)
-- **Troubleshooting**: See [HDRL Training Guide - Troubleshooting](docs/hdrl_training_guide.md#troubleshooting)
+- **Troubleshooting**: See [Troubleshooting Guide](docs/troubleshooting.md) for common issues and solutions
 
 ## Contributing
 1. Fork the repository

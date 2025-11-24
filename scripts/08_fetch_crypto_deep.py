@@ -355,8 +355,14 @@ def main():
     for ticker, mapping in CRYPTO_UNIVERSE.items():
         print(f"Processing {ticker} ({mapping['alpaca']})...")
         
-        # Fetch price history
-        price_df = fetch_price_history(mapping["alpaca"], alpaca_headers, alpaca_data_url, years=3)
+        # Fetch price history (15Min bars for high-frequency trading)
+        price_df = fetch_price_history(
+            mapping["alpaca"], 
+            alpaca_headers, 
+            alpaca_data_url, 
+            years=3,
+            timeframe="15Min"  # v1.2: High-frequency 15-minute bars
+        )
         
         if price_df.empty:
             print(f"  ⚠ Skipping {ticker} - no price data available")

@@ -221,7 +221,7 @@ def main():
     print()
     
     # --- CALLBACKS ---
-    print("Step 3: Setting up training callbacks...")
+    print("Step 4: Setting up training callbacks...")
     
     # Checkpoint callback: Save model periodically
     checkpoint_callback = CheckpointCallback(
@@ -309,7 +309,7 @@ def main():
         print()
     finally:
         # Always save final model and normalization stats
-        print("Step 5: Saving final model and normalization stats...")
+        print("Step 6: Saving final model and normalization stats...")
         
         # Save final model state
         final_model_path = model_dir / "final_model"
@@ -326,7 +326,7 @@ def main():
         print()
     
     # --- TEST PREDICTIONS ---
-    print("Step 6: Testing model predictions...")
+    print("Step 7: Testing model predictions...")
     
     # Load normalization for consistent testing
     test_env = FastCryptoEnv(data_path=data_path)

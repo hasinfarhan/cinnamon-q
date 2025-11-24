@@ -20,7 +20,7 @@ Author: arynosQ Engineering
 
 import sys
 import shutil
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Tuple
 
@@ -94,7 +94,21 @@ def refresh_training_data() -> Path:
     df = pd.read_parquet(DATA_PATH)
     latest_timestamp = pd.to_datetime(df['timestamp']).max()
     print(f"  Latest data: {latest_timestamp}")
-    print(f"  Data age: {(datetime.now() - latest_timestamp.to_pydatetime()).days} days")
+    
+    # Handle timezone-aware vs timezone-naive datetime comparison
+    latest_dt = latest_timestamp.to_pydatetime()
+    now_dt = datetime.now(timezone.utc) if latest_dt.tzinfo is not None else datetime.now()
+    
+    # If latest_dt is timezone-aware, make now_dt aware too
+    if latest_dt.tzinfo is not None and now_dt.tzinfo is None:
+        now_dt = datetime.now(timezone.utc)
+    elif latest_dt.tzinfo is None and now_dt.tzinfo is not None:
+        # Remove timezone from latest_dt for comparison
+        latest_dt = latest_dt.replace(tzinfo=None)
+        now_dt = datetime.now()
+    
+    data_age_days = (now_dt - latest_dt).days
+    print(f"  Data age: {data_age_days} days")
     print()
     
     return DATA_PATH

@@ -242,7 +242,15 @@ class AlpacaProvider(ExecutionProvider):
                         # For crypto, use the crypto-specific endpoint via direct API call
                         # alpaca-trade-api's get_barset doesn't work for crypto
                         import requests
-                        crypto_symbol = symbol  # Already in BTCUSD format
+                        
+                        # Data API requires crypto symbols with slash (e.g., "BTC/USD")
+                        # But symbol is already normalized to "BTCUSD" for trading API
+                        # Convert back to "BTC/USD" format for Data API
+                        if '/' not in symbol:
+                            # Convert "BTCUSD" -> "BTC/USD"
+                            crypto_symbol = f"{symbol[:-3]}/{symbol[-3:]}"
+                        else:
+                            crypto_symbol = symbol
                         
                         # Use Alpaca Data API for crypto
                         data_url = "https://data.alpaca.markets"

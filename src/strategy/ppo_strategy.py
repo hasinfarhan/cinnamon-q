@@ -21,6 +21,45 @@ from execution.models import TargetPortfolio
 from strategy.rl.fast_env import FastCryptoEnv
 
 
+def load_asset_universe(universe_csv_path: Optional[Path] = None) -> list:
+    """
+    Load asset universe from crypto_universe.csv.
+    
+    This ensures the asset list matches the training data structure.
+    Assets are sorted alphabetically to match the training environment.
+    
+    Args:
+        universe_csv_path: Path to crypto_universe.csv (default: auto-detect)
+    
+    Returns:
+        List of asset symbols sorted alphabetically (matching training order)
+    """
+    if universe_csv_path is None:
+        # Auto-detect path relative to project root
+        project_root = Path(__file__).parent.parent.parent
+        universe_csv_path = project_root / "data" / "raw" / "crypto_universe.csv"
+    
+    if not universe_csv_path.exists():
+        raise FileNotFoundError(
+            f"Universe CSV not found: {universe_csv_path}\n"
+            "Please ensure data/raw/crypto_universe.csv exists."
+        )
+    
+    # Load CSV and extract alpaca_symbol column
+    df = pd.read_csv(universe_csv_path)
+    
+    if 'alpaca_symbol' not in df.columns:
+        raise ValueError(
+            f"Universe CSV missing 'alpaca_symbol' column: {universe_csv_path}"
+        )
+    
+    # Extract and sort alphabetically (CRITICAL: matches training data order)
+    # Training data uses sorted(df['ticker'].unique().tolist())
+    asset_list = sorted(df['alpaca_symbol'].dropna().unique().tolist())
+    
+    return asset_list
+
+
 class PPOStrategy:
     """
     PPO-based strategy that uses a trained reinforcement learning agent
@@ -75,15 +114,24 @@ class PPOStrategy:
         # Load normalization statistics (CRITICAL)
         print(f"📦 Loading normalization statistics from: {vec_norm_path}")
         
-        # To load VecNormalize, we need a dummy environment that matches training structure
-        # Create a temporary FastCryptoEnv to get the correct structure
-        temp_env = FastCryptoEnv(data_path=data_path)
-        
-        # Get asset list from environment
+        # Load asset universe dynamically from CSV (v1.2: supports 17+ assets)
+        # CRITICAL: Must be sorted alphabetically to match training data order
         if asset_list is None:
-            self.asset_list = temp_env.assets
+            try:
+                # Try to load from universe CSV first
+                project_root = Path(__file__).parent.parent.parent
+                universe_csv = project_root / "data" / "raw" / "crypto_universe.csv"
+                self.asset_list = load_asset_universe(universe_csv)
+                print(f"✓ Loaded {len(self.asset_list)} assets from universe CSV")
+            except (FileNotFoundError, ValueError) as e:
+                # Fallback: Load from environment (for backward compatibility)
+                print(f"⚠ Warning: Could not load universe CSV: {e}")
+                print("  Falling back to environment asset list...")
+                temp_env = FastCryptoEnv(data_path=data_path)
+                self.asset_list = temp_env.assets
         else:
-            self.asset_list = asset_list
+            # Use provided asset list (but ensure it's sorted)
+            self.asset_list = sorted(asset_list)
         
         self.n_assets = len(self.asset_list)
         

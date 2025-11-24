@@ -5,6 +5,7 @@ This module provides the TradingEngine class that orchestrates order execution
 using the Factory Pattern to select the appropriate broker provider.
 """
 
+import time
 import uuid
 from typing import List, Optional
 
@@ -282,6 +283,11 @@ class TradingEngine:
                 # Log trade to database if db_service is available
                 if self.db is not None and result is not None:
                     self._log_trade_to_db(sell_order, result)
+                
+                # Rate limiting: Prevent API rate limit hits when rebalancing many assets
+                # Alpaca limit: 200 req/min = ~3.3 req/sec, so 0.1s delay is safe
+                # This is especially important for v1.2 with 17+ assets
+                time.sleep(0.1)
                     
             except Exception as e:
                 print(f"✗ Error executing sell order for {sell_order.symbol}: {str(e)}")
@@ -298,6 +304,10 @@ class TradingEngine:
                 # Log trade to database if db_service is available
                 if self.db is not None and result is not None:
                     self._log_trade_to_db(buy_order, result)
+                
+                # Rate limiting: Prevent API rate limit hits when rebalancing many assets
+                # Alpaca limit: 200 req/min = ~3.3 req/sec, so 0.1s delay is safe
+                time.sleep(0.1)
                     
             except Exception as e:
                 print(f"✗ Error executing buy order for {buy_order.symbol}: {str(e)}")

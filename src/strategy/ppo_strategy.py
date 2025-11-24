@@ -111,9 +111,6 @@ class PPOStrategy:
         
         print(f"✓ PPO model loaded")
         
-        # Load normalization statistics (CRITICAL)
-        print(f"📦 Loading normalization statistics from: {vec_norm_path}")
-        
         # Load asset universe - CRITICAL: Must match training data exactly
         # The model was trained on a specific set of assets, so we must use the same set
         # Priority: 1) Provided asset_list, 2) Training data assets, 3) Universe CSV (filtered)
@@ -163,13 +160,21 @@ class PPOStrategy:
                     # Last resort: Use environment (for backward compatibility)
                     print(f"⚠ Warning: Could not load from CSV: {e2}")
                     print("  Falling back to environment asset list...")
-                    temp_env = FastCryptoEnv(data_path=data_path)
-                    self.asset_list = temp_env.assets
+                    fallback_env = FastCryptoEnv(data_path=data_path)
+                    self.asset_list = fallback_env.assets
         else:
             # Use provided asset list (but ensure it's sorted)
             self.asset_list = sorted(asset_list)
         
         self.n_assets = len(self.asset_list)
+        
+        # Load normalization statistics (CRITICAL)
+        print(f"📦 Loading normalization statistics from: {vec_norm_path}")
+        
+        # To load VecNormalize, we need a dummy environment that matches training structure
+        # Create a temporary FastCryptoEnv to get the correct structure
+        # This must be created before the closure to ensure proper scope access
+        temp_env = FastCryptoEnv(data_path=data_path)
         
         # Create a dummy vectorized environment for VecNormalize
         # We need to pass a factory function, not the env itself

@@ -23,7 +23,7 @@ ipykernel = ">=6.0.0"
 notebook = ">=6.4.0"
 openpyxl = ">=3.0.0"
 xlrd = ">=2.0.0"
-tqdm = ">=4.62.0"
+tqdm = "*"
 python-dotenv = "*"
 pytest = ">=6.2.0"
 pytest-cov = ">=3.0.0"
@@ -37,6 +37,7 @@ pyarrow = "*"
 pycoingecko = "*"
 tensorboard = "*"
 sqlalchemy = "*"
+rich = "*"
 
 [dev-packages]
 

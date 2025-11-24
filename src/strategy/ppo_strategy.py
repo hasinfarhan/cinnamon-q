@@ -150,7 +150,8 @@ class PPOStrategy:
                 
                 # Calculate returns (pct_change)
                 # Get previous row for this asset to calculate return
-                asset_history = df[df['ticker'] == asset].sort_values('timestamp')
+                # Use base_asset for data lookup (data uses "BTC", not "BTC/USD")
+                asset_history = df[df['ticker'] == base_asset].sort_values('timestamp')
                 if len(asset_history) > 1:
                     current_price = asset_history.iloc[-1]['close']
                     previous_price = asset_history.iloc[-2]['close']
@@ -168,7 +169,8 @@ class PPOStrategy:
                 
                 # Normalize commit_count (MinMax scaling 0-1)
                 commit_count = row.get('commit_count_4_weeks', 0)
-                asset_all_data = df[df['ticker'] == asset]
+                # Use base_asset for data lookup (data uses "BTC", not "BTC/USD")
+                asset_all_data = df[df['ticker'] == base_asset]
                 commit_min = asset_all_data['commit_count_4_weeks'].min()
                 commit_max = asset_all_data['commit_count_4_weeks'].max()
                 if commit_max > commit_min:

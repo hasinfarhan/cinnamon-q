@@ -8,9 +8,29 @@ Python 3.12 has compatibility issues with `alpaca-trade-api` due to urllib3 depe
 
 ### Option 1: System-wide Installation (Ubuntu/Debian)
 
+**For Ubuntu 24.04 (Noble) and newer:**
+Python 3.11 is not in the default repositories. Use the deadsnakes PPA:
+
+```bash
+# Add deadsnakes PPA
+sudo apt update
+sudo apt install -y software-properties-common
+sudo add-apt-repository -y ppa:deadsnakes/ppa
+sudo apt update
+
+# Install Python 3.11
+sudo apt install -y python3.11 python3.11-venv python3.11-dev python3.11-distutils
+
+# Verify installation
+python3.11 --version
+```
+
+**For Ubuntu 22.04 (Jammy) and older:**
+Python 3.11 may be available in default repos or universe:
+
 ```bash
 sudo apt update
-sudo apt install python3.11 python3.11-venv python3.11-dev
+sudo apt install -y python3.11 python3.11-venv python3.11-dev
 ```
 
 ### Option 2: Using pyenv (Recommended)

@@ -359,16 +359,20 @@ class NewsFetcher:
         # Fetch from both sources simultaneously for better coverage
         # CryptoPanic: Crypto-specific news (better quality for crypto)
         # yfinance: General market news (broader coverage)
+        # 
+        # Fetch more than 'limit' from each source to ensure we get a good mix
+        # after sorting by timestamp (newer CryptoPanic news might dominate otherwise)
+        fetch_limit = max(limit * 2, 50)  # Fetch 2x the limit or at least 50
         
         if self.use_cryptopanic:
             # Fetch from CryptoPanic (crypto-specific)
-            cryptopanic_news = self._fetch_cryptopanic_news(symbol, limit=limit, days_back=days_back)
+            cryptopanic_news = self._fetch_cryptopanic_news(symbol, limit=fetch_limit, days_back=days_back)
             all_headlines.extend(cryptopanic_news)
         
         if self.use_yfinance:
             # Also fetch from yfinance (general market news)
             # This provides broader coverage and different perspectives
-            yfinance_news = self._fetch_yfinance_news(symbol, limit=limit, days_back=days_back)
+            yfinance_news = self._fetch_yfinance_news(symbol, limit=fetch_limit, days_back=days_back)
             all_headlines.extend(yfinance_news)
         
         # Remove duplicates (same title) and sort by timestamp

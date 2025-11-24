@@ -29,7 +29,7 @@ class FastCryptoEnv(gym.Env):
     def __init__(
         self,
         data_path: Optional[Path] = None,
-        data_arrays: Optional[Dict] = None,
+        data_config: Optional[Dict] = None,
         lookback_window: int = 30,
         initial_cash: float = 100000.0
     ):
@@ -37,15 +37,17 @@ class FastCryptoEnv(gym.Env):
         Initialize the fast crypto trading environment.
         
         Args:
-            data_path: Path to crypto_training_data.parquet (used if data_arrays is None)
-            data_arrays: Preprocessed data dictionary with keys:
-                - 'returns_array': [n_steps, n_assets] float32
-                - 'volatility_array': [n_steps, n_assets] float32
-                - 'commit_array': [n_steps, n_assets] float32
-                - 'utility_array': [n_steps, n_assets] float32
-                - 'price_array': [n_steps, n_assets] float32
+            data_path: Path to crypto_training_data.parquet (used if data_config is None)
+            data_config: Preprocessed data configuration with keys:
+                - 'returns_path': Path to returns_array.npy (memory-mapped)
+                - 'volatility_path': Path to volatility_array.npy (memory-mapped)
+                - 'commit_path': Path to commit_array.npy (memory-mapped)
+                - 'utility_path': Path to utility_array.npy (memory-mapped)
+                - 'price_path': Path to price_array.npy (memory-mapped)
                 - 'asset_list': List of asset symbols
                 - 'timestamps': List of timestamps
+                - 'n_steps': Number of timesteps
+                - 'n_assets': Number of assets
             lookback_window: Number of days for Sortino calculation
             initial_cash: Starting portfolio value
         """
@@ -54,17 +56,18 @@ class FastCryptoEnv(gym.Env):
         self.lookback_window = lookback_window
         self.initial_cash = initial_cash
         
-        # Use preprocessed data if provided, otherwise load from file
-        if data_arrays is not None:
-            # Lightweight initialization: use preprocessed arrays
-            self.returns_array = data_arrays['returns_array']
-            self.volatility_array = data_arrays['volatility_array']
-            self.commit_array = data_arrays['commit_array']
-            self.utility_array = data_arrays['utility_array']
-            self.price_array = data_arrays['price_array']
-            self.asset_list = data_arrays['asset_list']
-            self.timestamps = data_arrays['timestamps']
-            self.n_steps = len(self.timestamps)
+        # Use memory-mapped files if provided, otherwise load from parquet
+        if data_config is not None:
+            # Lightweight initialization: load from memory-mapped files (zero-copy)
+            # mmap_mode='r' means read-only, shared memory access
+            self.returns_array = np.load(data_config['returns_path'], mmap_mode='r')
+            self.volatility_array = np.load(data_config['volatility_path'], mmap_mode='r')
+            self.commit_array = np.load(data_config['commit_path'], mmap_mode='r')
+            self.utility_array = np.load(data_config['utility_path'], mmap_mode='r')
+            self.price_array = np.load(data_config['price_path'], mmap_mode='r')
+            self.asset_list = data_config['asset_list']
+            self.timestamps = data_config['timestamps']
+            self.n_steps = data_config['n_steps']
         else:
             # Legacy mode: load from file (for backward compatibility)
             if data_path is None:

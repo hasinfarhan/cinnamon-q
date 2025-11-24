@@ -1,10 +1,10 @@
 """
-Data Preprocessing for FastCryptoEnv - Load Once, Use Many
+Data Preprocessing for FastCryptoEnv - Load Once, Use Many (Memory-Mapped)
 
 This module provides a function to preprocess the crypto training data
-ONCE in the main process, then pass the clean numpy arrays to multiple
-environment instances. This eliminates redundant file I/O and processing
-when using SubprocVecEnv with parallel environments.
+ONCE in the main process, then save it to disk for memory-mapped access
+by multiple environment instances. This eliminates redundant file I/O,
+processing, and pickling overhead when using SubprocVecEnv.
 """
 
 from pathlib import Path
@@ -14,26 +14,29 @@ import numpy as np
 import pandas as pd
 
 
-def prepare_training_data(data_path: Path) -> Dict:
+def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
     """
-    Load and preprocess crypto training data into optimized numpy arrays.
+    Load and preprocess crypto training data, save to disk for memory-mapped access.
     
     This function should be called ONCE in the main process before spawning
-    parallel environments. The returned dictionary can be passed to FastCryptoEnv
-    instances to avoid redundant loading and processing.
+    parallel environments. It saves the preprocessed arrays to disk, which
+    subprocesses can then access via memory-mapped files (zero-copy, instant).
     
     Args:
         data_path: Path to crypto_training_data.parquet
+        temp_dir: Temporary directory to save .npy files
     
     Returns:
-        Dictionary with preprocessed arrays:
-            - 'returns_array': [n_steps, n_assets] float32
-            - 'volatility_array': [n_steps, n_assets] float32
-            - 'commit_array': [n_steps, n_assets] float32
-            - 'utility_array': [n_steps, n_assets] float32
-            - 'price_array': [n_steps, n_assets] float32
+        Dictionary with file paths and metadata:
+            - 'returns_path': Path to returns_array.npy
+            - 'volatility_path': Path to volatility_array.npy
+            - 'commit_path': Path to commit_array.npy
+            - 'utility_path': Path to utility_array.npy
+            - 'price_path': Path to price_array.npy
             - 'asset_list': List of asset symbols
             - 'timestamps': List of timestamps
+            - 'n_steps': Number of timesteps
+            - 'n_assets': Number of assets
     """
     if not data_path.exists():
         raise FileNotFoundError(
@@ -97,6 +100,25 @@ def prepare_training_data(data_path: Path) -> Dict:
                 utility_array[ts_idx, asset_idx] = float(row['utility_score'])
                 price_array[ts_idx, asset_idx] = float(row['close'])
     
+    # Save arrays to disk for memory-mapped access
+    # This avoids pickling overhead when passing to subprocesses
+    print("  Saving arrays to disk for memory-mapped access...")
+    
+    temp_dir = Path(temp_dir)
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    
+    returns_path = temp_dir / "returns_array.npy"
+    volatility_path = temp_dir / "volatility_array.npy"
+    commit_path = temp_dir / "commit_array.npy"
+    utility_path = temp_dir / "utility_array.npy"
+    price_path = temp_dir / "price_array.npy"
+    
+    np.save(str(returns_path), returns_array)
+    np.save(str(volatility_path), volatility_array)
+    np.save(str(commit_path), commit_array)
+    np.save(str(utility_path), utility_array)
+    np.save(str(price_path), price_array)
+    
     # Calculate total memory usage
     total_bytes = (
         returns_array.nbytes +
@@ -107,15 +129,18 @@ def prepare_training_data(data_path: Path) -> Dict:
     )
     total_mb = total_bytes / (1024 * 1024)
     
-    print(f"✅ Data optimized. Shape: [{n_steps}, {n_assets}]. Size: {total_mb:.2f} MB")
+    print(f"✅ Data optimized and saved. Shape: [{n_steps}, {n_assets}]. Size: {total_mb:.2f} MB")
+    print(f"   Files saved to: {temp_dir}")
     
     return {
-        'returns_array': returns_array,
-        'volatility_array': volatility_array,
-        'commit_array': commit_array,
-        'utility_array': utility_array,
-        'price_array': price_array,
+        'returns_path': str(returns_path),
+        'volatility_path': str(volatility_path),
+        'commit_path': str(commit_path),
+        'utility_path': str(utility_path),
+        'price_path': str(price_path),
         'asset_list': asset_list,
-        'timestamps': timestamps
+        'timestamps': timestamps,
+        'n_steps': n_steps,
+        'n_assets': n_assets
     }
 

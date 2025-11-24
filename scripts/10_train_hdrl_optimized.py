@@ -14,6 +14,9 @@ Based on the optimization strategy for saturating GPU and CPU.
 import os
 import sys
 import time
+import atexit
+import shutil
+import tempfile
 from pathlib import Path
 
 # Add src to the Python path
@@ -47,23 +50,24 @@ def _check_tensorboard():
         return False
 
 
-def make_env_factory(data_arrays: dict):
+def make_env_factory(data_config: dict):
     """
-    Factory function for creating environments with preprocessed data.
+    Factory function for creating environments with memory-mapped data.
     
     This is required for SubprocVecEnv. Each process will call this
-    to create its own environment instance. The data_arrays are passed
-    directly, avoiding redundant file I/O and processing.
+    to create its own environment instance. The data_config contains
+    file paths to memory-mapped .npy files (zero-copy access).
     
     Args:
-        data_arrays: Preprocessed data dictionary from prepare_training_data()
+        data_config: Data configuration dictionary from prepare_training_data()
+                    Contains paths to .npy files and metadata
     
     Returns:
         Factory function that creates FastCryptoEnv instances
     """
     def _init():
-        # Create environment with preprocessed data (no file I/O!)
-        env = FastCryptoEnv(data_arrays=data_arrays)
+        # Create environment with memory-mapped data (instant load, zero-copy)
+        env = FastCryptoEnv(data_config=data_config)
         return env
     return _init
 
@@ -106,15 +110,31 @@ def main():
     print("Step 1: Loading and preprocessing data (Main Process)...")
     start_data_load = time.time()
     
+    # Create temporary directory for memory-mapped files
+    temp_dir = Path(tempfile.mkdtemp(prefix="hdrl_data_"))
+    
+    # Register cleanup function to remove temp directory on exit
+    def cleanup_temp_dir():
+        """Clean up temporary directory on exit."""
+        try:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        except Exception:
+            pass
+    
+    atexit.register(cleanup_temp_dir)
+    print(f"  Temporary directory: {temp_dir}")
+    
     try:
-        data_arrays = prepare_training_data(data_path)
+        data_config = prepare_training_data(data_path, temp_dir)
         data_load_time = time.time() - start_data_load
-        print(f"✅ Data loaded in {data_load_time:.2f}s")
+        print(f"✅ Data loaded and saved in {data_load_time:.2f}s")
+        print(f"   Memory-mapped files ready for subprocesses")
         print()
     except Exception as e:
         print(f"✗ Error loading data: {e}")
         import traceback
         traceback.print_exc()
+        cleanup_temp_dir()
         sys.exit(1)
     
     # Verify data exists
@@ -139,12 +159,12 @@ def main():
     
     start_init = time.time()
     
-    # Create factory function with preprocessed data
-    # This avoids redundant file I/O in each subprocess
-    make_env_fn = make_env_factory(data_arrays)
+    # Create factory function with memory-mapped data config
+    # Subprocesses will load from memory-mapped files (instant, zero-copy)
+    make_env_fn = make_env_factory(data_config)
     
     # SubprocVecEnv = True parallelism (separate processes)
-    # Each subprocess receives preprocessed arrays (efficient copy-on-write on Linux)
+    # Each subprocess loads from memory-mapped files (zero-copy, instant access)
     env = make_vec_env(
         make_env_fn,
         n_envs=n_envs,

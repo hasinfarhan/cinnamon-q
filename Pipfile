@@ -30,7 +30,7 @@ pytest-cov = ">=3.0.0"
 black = ">=21.0.0"
 flake8 = ">=4.0.0"
 isort = ">=5.10.0"
-pandas-ta = "*"
+# pandas-ta = "*"  # Not compatible with Python 3.11, removed
 alpaca-trade-api = "*"
 pydantic = "*"
 pyarrow = "*"

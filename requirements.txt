@@ -6,7 +6,7 @@ scipy>=1.7.0
 # Financial data and analysis
 yfinance>=0.1.70
 quantstats>=0.0.59
-pandas-ta>=0.3.14b0
+# pandas-ta>=0.3.14b0  # Not compatible with Python 3.11, removed
 
 # Reinforcement learning
 stable-baselines3>=1.6.0

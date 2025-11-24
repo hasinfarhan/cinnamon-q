@@ -192,6 +192,12 @@ temp/
 *.sqlite3
 arynosq.db
 
+# Model staging and archives (runtime artifacts)
+models/staging/
+models/archive/
+models/challenger/
+models/production/
+
 # Journal files (SQLite creates these temporarily)
 *.db-journal
 *.db-wal

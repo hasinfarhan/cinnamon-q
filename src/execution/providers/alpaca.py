@@ -226,35 +226,62 @@ class AlpacaProvider(ExecutionProvider):
             #    Alpaca accepts high precision (up to 9 decimals for crypto)
             #    Rounding qty can cause "insufficient balance" errors when selling
             #    Example: 20.776191583 ETH rounded to 20.78 tries to sell more than owned
-            qty = order.qty  # Pass raw float - Alpaca handles precision
+            
+            # Handle notional orders: alpaca-trade-api doesn't support notional directly,
+            # so we need to fetch the current price and calculate quantity
+            qty = order.qty
             notional = round(order.notional, 2) if order.notional is not None else None
             
-            # Build order parameters
-            order_params = {
+            # If notional is provided, we need to calculate qty from current price
+            if notional is not None and qty is None:
+                try:
+                    # Fetch current quote to get the price
+                    quote = self.api.get_latest_quote(symbol)
+                    if quote:
+                        # Use bid price for sells, ask price for buys
+                        if order.side == OrderSide.SELL:
+                            current_price = float(quote.bp)  # bid price
+                        else:
+                            current_price = float(quote.ap)  # ask price
+                        
+                        # Calculate quantity from notional
+                        qty = notional / current_price
+                        print(f"  Calculated qty from notional: ${notional:.2f} / ${current_price:.2f} = {qty:.9f}")
+                    else:
+                        # Fallback: try to get last trade price
+                        last_trade = self.api.get_latest_trade(symbol)
+                        if last_trade:
+                            current_price = float(last_trade.price)
+                            qty = notional / current_price
+                            print(f"  Calculated qty from last trade: ${notional:.2f} / ${current_price:.2f} = {qty:.9f}")
+                        else:
+                            raise ValueError(f"Could not fetch price for {symbol} to calculate quantity from notional")
+                except Exception as e:
+                    print(f"⚠ Warning: Could not calculate qty from notional: {e}")
+                    raise ValueError(f"Failed to calculate quantity from notional ${notional:.2f} for {symbol}: {e}")
+            
+            # Build order parameters (alpaca-trade-api requires positional args, not kwargs)
+            # submit_order(symbol, qty, side, type, time_in_force, limit_price=None, ...)
+            submit_kwargs = {
                 "symbol": symbol,
+                "qty": qty,
                 "side": order.side.value,
                 "type": order.order_type.value,
                 "time_in_force": time_in_force,
             }
             
-            # Add quantity or notional
-            if qty is not None:
-                order_params["qty"] = qty
-            elif notional is not None:
-                order_params["notional"] = notional
-            
             # Add limit price if it's a limit order
             if order.order_type == OrderType.LIMIT and order.limit_price is not None:
-                order_params["limit_price"] = round(order.limit_price, 2)
+                submit_kwargs["limit_price"] = round(order.limit_price, 2)
             
             # CRITICAL: Add client_order_id for idempotency
             if order.client_order_id:
-                order_params["client_order_id"] = order.client_order_id
+                submit_kwargs["client_order_id"] = order.client_order_id
             
             # Submit the order
             print(f"  Symbol: {symbol} | Side: {order.side.value} | Type: {order.order_type.value} | TIF: {time_in_force}")
             if qty is not None:
-                print(f"  Quantity: {qty}")
+                print(f"  Quantity: {qty:.9f}")
             if notional is not None:
                 print(f"  Notional: ${notional:.2f}")
             if order.limit_price is not None:
@@ -262,7 +289,7 @@ class AlpacaProvider(ExecutionProvider):
             if order.client_order_id:
                 print(f"  Client Order ID: {order.client_order_id}")
             
-            response = self.api.submit_order(**order_params)
+            response = self.api.submit_order(**submit_kwargs)
             
             # Convert response to dict (use _raw if available, otherwise build manually)
             if hasattr(response, '_raw'):

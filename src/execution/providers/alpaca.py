@@ -235,47 +235,61 @@ class AlpacaProvider(ExecutionProvider):
             # If notional is provided, we need to calculate qty from current price
             if notional is not None and qty is None:
                 try:
-                    # Use get_barset to get the latest bar (works for both stocks and crypto)
-                    # This is more reliable than get_last_quote which has endpoint issues for crypto
-                    try:
-                        # Get the most recent 1-minute bar
-                        barset = self.api.get_barset(symbol, '1Min', limit=1)
-                        if barset and symbol in barset and len(barset[symbol]) > 0:
-                            latest_bar = barset[symbol][0]
-                            current_price = float(latest_bar.c)  # close price
-                            
-                            # Calculate quantity from notional
+                    # Check if this is a crypto symbol (ends with USD or contains /)
+                    is_crypto_symbol = symbol.endswith('USD') or '/' in order.symbol
+                    
+                    if is_crypto_symbol:
+                        # For crypto, use the crypto-specific endpoint via direct API call
+                        # alpaca-trade-api's get_barset doesn't work for crypto
+                        import requests
+                        crypto_symbol = symbol  # Already in BTCUSD format
+                        
+                        # Use Alpaca Data API for crypto
+                        data_url = "https://data.alpaca.markets"
+                        headers = {
+                            "APCA-API-KEY-ID": self.api_key,
+                            "APCA-API-SECRET-KEY": self.secret_key
+                        }
+                        
+                        # Get latest crypto bar
+                        crypto_endpoint = f"{data_url}/v1beta3/crypto/us/latest/bars"
+                        params = {"symbols": crypto_symbol}
+                        
+                        response = requests.get(crypto_endpoint, headers=headers, params=params)
+                        response.raise_for_status()
+                        data = response.json()
+                        
+                        if crypto_symbol in data.get("bars", {}):
+                            latest_bar = data["bars"][crypto_symbol][0]
+                            current_price = float(latest_bar["c"])  # close price
                             qty = notional / current_price
-                            print(f"  Calculated qty from latest bar: ${notional:.2f} / ${current_price:.2f} = {qty:.9f}")
+                            print(f"  Calculated qty from crypto bar: ${notional:.2f} / ${current_price:.2f} = {qty:.9f}")
                         else:
-                            raise ValueError("No bars returned")
-                    except (KeyError, AttributeError, ValueError) as e:
-                        # Fallback 1: Try get_last_trade (works for both stocks and crypto)
+                            raise ValueError(f"No price data returned for {crypto_symbol}")
+                    else:
+                        # For stocks, use get_barset
                         try:
-                            last_trade = self.api.get_last_trade(symbol)
-                            if last_trade:
-                                current_price = float(last_trade.price)
+                            barset = self.api.get_barset(symbol, '1Min', limit=1)
+                            if barset and symbol in barset and len(barset[symbol]) > 0:
+                                latest_bar = barset[symbol][0]
+                                current_price = float(latest_bar.c)  # close price
+                                
                                 qty = notional / current_price
-                                print(f"  Calculated qty from last trade: ${notional:.2f} / ${current_price:.2f} = {qty:.9f}")
+                                print(f"  Calculated qty from latest bar: ${notional:.2f} / ${current_price:.2f} = {qty:.9f}")
                             else:
-                                raise ValueError("No trade data")
-                        except Exception:
-                            # Fallback 2: Try get_last_quote (may fail for crypto, but worth trying)
+                                raise ValueError("No bars returned")
+                        except Exception as e1:
+                            # Fallback: Try get_last_trade
                             try:
-                                quote = self.api.get_last_quote(symbol)
-                                if quote:
-                                    # Use bid price for sells, ask price for buys
-                                    if order.side == OrderSide.SELL:
-                                        current_price = float(quote.bp)  # bid price
-                                    else:
-                                        current_price = float(quote.ap)  # ask price
-                                    
+                                last_trade = self.api.get_last_trade(symbol)
+                                if last_trade:
+                                    current_price = float(last_trade.price)
                                     qty = notional / current_price
-                                    print(f"  Calculated qty from quote: ${notional:.2f} / ${current_price:.2f} = {qty:.9f}")
+                                    print(f"  Calculated qty from last trade: ${notional:.2f} / ${current_price:.2f} = {qty:.9f}")
                                 else:
-                                    raise ValueError("No quote data")
+                                    raise ValueError("No trade data")
                             except Exception:
-                                raise ValueError(f"Could not fetch price for {symbol} using any method")
+                                raise ValueError(f"Could not fetch price for {symbol}: {e1}")
                 except Exception as e:
                     print(f"⚠ Warning: Could not calculate qty from notional: {e}")
                     raise ValueError(f"Failed to calculate quantity from notional ${notional:.2f} for {symbol}: {e}")

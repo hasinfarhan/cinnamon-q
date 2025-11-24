@@ -4,6 +4,7 @@
 system:
   heartbeat_interval: 60  # seconds - Main execution loop interval
   db_url: "sqlite:///arynosq.db"  # Database connection URL
+  training_interval_hours: 6  # hours - Background MLOps pipeline interval (0 = disabled)
 
 strategies:
   # Traditional momentum strategy (disabled for now)

@@ -9,6 +9,8 @@ The orchestrator runs a "Heartbeat Loop" that checks strategy schedules
 and executes them when their intervals have elapsed.
 """
 
+import logging
+import multiprocessing
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -23,10 +25,13 @@ from config.loader import load_config
 from config.schema import StrategyConfig
 from database.service import DatabaseService
 from execution.engine import TradingEngine
+from pipeline.runner import run_full_pipeline
 from strategy.allocators.top_k import TopKEqualWeight
 from strategy.engine import StrategyEngine
 from strategy.ppo_strategy import PPOStrategy
 from strategy.signals.momentum import MomentumSignal
+
+logger = logging.getLogger(__name__)
 
 
 class BotOrchestrator:
@@ -101,6 +106,16 @@ class BotOrchestrator:
         
         # Step 5: Initialize last run times (empty = never run, will run immediately)
         self.last_run: Dict[str, datetime] = {}
+        
+        # Step 6: Initialize Training Scheduler (Background MLOps Pipeline)
+        self.training_interval_hours = self.config.system.training_interval_hours
+        self.last_training_run: Optional[datetime] = None
+        self.training_process: Optional[multiprocessing.Process] = None
+        
+        if self.training_interval_hours > 0:
+            print(f"✓ Training scheduler initialized: Every {self.training_interval_hours} hours")
+        else:
+            print("✓ Training scheduler disabled (training_interval_hours = 0)")
         
         print("=" * 80)
         print("✅ Orchestrator initialization complete!")
@@ -345,25 +360,79 @@ class BotOrchestrator:
             print()
             # Don't update last_run on error - will retry on next heartbeat
     
+    def _check_training_schedule(self):
+        """
+        Check if it's time to trigger background training.
+        
+        This method checks if the training interval has elapsed and
+        spawns a background process to run the MLOps pipeline if needed.
+        """
+        if self.training_interval_hours <= 0:
+            return  # Training disabled
+        
+        now = datetime.now(timezone.utc)
+        
+        # Check if training is needed
+        if self.last_training_run is None:
+            # First run, trigger immediately
+            should_train = True
+        else:
+            # Check if interval has elapsed
+            elapsed = now - self.last_training_run
+            should_train = elapsed >= timedelta(hours=self.training_interval_hours)
+        
+        # Check if previous training process is still running
+        if self.training_process is not None and self.training_process.is_alive():
+            logger.debug("Training process still running, skipping new training trigger")
+            return
+        
+        if should_train:
+            logger.info("=" * 80)
+            logger.info("🤖 Triggering background MLOps pipeline...")
+            logger.info(f"  Last training: {self.last_training_run or 'Never'}")
+            logger.info(f"  Interval: {self.training_interval_hours} hours")
+            logger.info("=" * 80)
+            
+            # Spawn background process for training
+            # This allows the trading loop to continue uninterrupted
+            self.training_process = multiprocessing.Process(
+                target=_run_training_pipeline,
+                name="MLOpsPipeline"
+            )
+            self.training_process.start()
+            
+            # Update last training run time
+            self.last_training_run = now
+            
+            logger.info(f"✓ Training pipeline started (PID: {self.training_process.pid})")
+            logger.info("  Trading will continue uninterrupted in the foreground")
+    
     def start(self) -> None:
         """
         Start the main heartbeat loop.
         
         This method runs indefinitely, checking strategy schedules and
-        executing them when their intervals have elapsed.
+        executing them when their intervals have elapsed. It also manages
+        background MLOps pipeline training on a schedule.
         
         The loop:
         1. Iterates through all configured strategies
         2. Checks if each strategy should run (based on interval)
         3. Executes strategies that are due
-        4. Sleeps for heartbeat_interval seconds
-        5. Repeats
+        4. Checks training schedule (spawns background process if needed)
+        5. Sleeps for heartbeat_interval seconds
+        6. Repeats
         
         Handles KeyboardInterrupt (Ctrl+C) gracefully for clean shutdown.
         """
         print("=" * 80)
         print("🚀 Starting arynosQ Orchestrator...")
         print("=" * 80)
+        print()
+        print("Features:")
+        print(f"  - Strategy execution: Every {self.config.system.heartbeat_interval}s")
+        if self.training_interval_hours > 0:
+            print(f"  - Background training: Every {self.training_interval_hours} hours")
         print()
         print("The bot is now running. Press Ctrl+C to stop.")
         print()
@@ -392,6 +461,10 @@ class BotOrchestrator:
                                 minutes = int((time_until_next.total_seconds() % 3600) // 60)
                                 print(f"⏳ Strategy '{strategy_name}': Next run in {hours}h {minutes}m")
                 
+                # Check training schedule (non-blocking)
+                if self.training_interval_hours > 0:
+                    self._check_training_schedule()
+                
                 # Sleep for heartbeat interval
                 print(f"💓 Heartbeat... waiting {self.config.system.heartbeat_interval}s")
                 print()
@@ -403,7 +476,17 @@ class BotOrchestrator:
             print("🛑 Shutting down gracefully...")
             print("=" * 80)
             print()
-            print("Orchestrator stopped. Goodbye!")
+            
+            # Wait for training process to finish (with timeout)
+            if self.training_process is not None and self.training_process.is_alive():
+                print("Waiting for background training to complete (max 60s)...")
+                self.training_process.join(timeout=60)
+                if self.training_process.is_alive():
+                    print("⚠ Training process still running, terminating...")
+                    self.training_process.terminate()
+                    self.training_process.join()
+            
+            print("✓ Orchestrator stopped. Goodbye!")
             sys.exit(0)
         except Exception as e:
             print()
@@ -412,5 +495,43 @@ class BotOrchestrator:
             print("=" * 80)
             import traceback
             traceback.print_exc()
+            
+            # Cleanup training process
+            if self.training_process is not None and self.training_process.is_alive():
+                self.training_process.terminate()
+                self.training_process.join()
+            
             sys.exit(1)
+
+
+def _run_training_pipeline():
+    """
+    Wrapper function for running the training pipeline in a separate process.
+    
+    This function is called by multiprocessing.Process and runs the full
+    MLOps pipeline in the background without blocking the main trading loop.
+    """
+    # Configure logging for background process
+    project_root = Path(__file__).parent.parent
+    logs_dir = project_root / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - [MLOps] - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(logs_dir / "mlops_pipeline.log"),
+            logging.StreamHandler()
+        ]
+    )
+    
+    try:
+        # Run the full pipeline
+        success = run_full_pipeline()
+        if success:
+            logging.info("✓ MLOps pipeline completed successfully")
+        else:
+            logging.warning("⚠ MLOps pipeline completed with warnings")
+    except Exception as e:
+        logging.error(f"✗ MLOps pipeline failed: {e}", exc_info=True)
 

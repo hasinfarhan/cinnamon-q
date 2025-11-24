@@ -20,6 +20,7 @@ class SystemConfig(BaseModel):
     Attributes:
         heartbeat_interval: Interval in seconds for the main execution loop
         db_url: Database connection URL (SQLite for MVP)
+        training_interval_hours: Interval in hours for background MLOps pipeline (0 = disabled)
     """
     heartbeat_interval: int = Field(
         default=60,
@@ -29,6 +30,11 @@ class SystemConfig(BaseModel):
     db_url: str = Field(
         default="sqlite:///arynosq.db",
         description="Database connection URL"
+    )
+    training_interval_hours: float = Field(
+        default=6.0,
+        ge=0.0,
+        description="Interval in hours for background MLOps pipeline (0 = disabled)"
     )
     
     model_config = {"frozen": True}

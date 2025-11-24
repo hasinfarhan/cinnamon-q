@@ -246,11 +246,26 @@ class FastCryptoEnv(gym.Env):
         Execute one step using optimized numpy operations.
         
         Args:
-            action: Portfolio weights
+            action: Portfolio weights (shape: (n_assets + 1,))
         
         Returns:
             Standard gymnasium 5-tuple
         """
+        # Ensure action is a numpy array and has correct shape
+        if not isinstance(action, np.ndarray):
+            action = np.array(action, dtype=np.float32)
+        
+        # Flatten action if it's multi-dimensional
+        action = action.flatten()
+        
+        # Ensure action has correct length
+        expected_len = self.n_assets + 1
+        if len(action) != expected_len:
+            raise ValueError(
+                f"Action shape mismatch: expected {expected_len} (n_assets={self.n_assets} + 1), "
+                f"got {len(action)}"
+            )
+        
         # Normalize action (fast numpy)
         action = np.clip(action, 0.0, 1.0)
         action_sum = np.sum(action)

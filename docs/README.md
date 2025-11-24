@@ -13,6 +13,13 @@ Complete documentation for Project arynosQ (cinnamon-q).
   - What's next (roadmap)
   - Quick start guides
 
+### 🔄 Phase 4: Adaptive Intelligence
+- **[Live Data Bridge](phase4_live_data_bridge.md)**: Real-time market data integration
+  - Problem solved (Model Rot / Concept Drift)
+  - Implementation details
+  - Data flow and architecture
+  - Testing and troubleshooting
+
 ### 🧠 HDRL Training & Deployment
 - **[HDRL Training Guide](hdrl_training_guide.md)**: Complete guide for training, versioning, and deploying the Hierarchical Deep Reinforcement Learning agent
   - Prerequisites and hardware requirements

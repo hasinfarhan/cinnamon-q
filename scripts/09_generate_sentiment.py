@@ -24,15 +24,37 @@ import sys
 sys.path.insert(0, str(project_root / "src" / "strategy" / "signals"))
 from llm_crypto import LLMCryptoSignal
 
-# Mapping from our ticker format to yfinance format
-TICKER_MAPPING = {
-    "BTC": "BTC-USD",
-    "ETH": "ETH-USD",
-    "SOL": "SOL-USD",
-    "LINK": "LINK-USD",
-    "UNI": "UNI-USD",
-    "AAVE": "AAVE-USD",
-}
+# Load ticker mapping from crypto_universe.csv (v1.2: supports all 28+ assets)
+CRYPTO_UNIVERSE_CSV = Path(__file__).parent.parent / "data" / "raw" / "crypto_universe.csv"
+
+
+def load_ticker_mapping() -> dict:
+    """
+    Load ticker mapping from crypto_universe.csv.
+    
+    Returns:
+        dict: Mapping of symbol -> yfinance symbol (e.g., "BTC" -> "BTC-USD")
+    """
+    if not CRYPTO_UNIVERSE_CSV.exists():
+        # Fallback to hardcoded mapping if CSV doesn't exist
+        return {
+            "BTC": "BTC-USD",
+            "ETH": "ETH-USD",
+            "SOL": "SOL-USD",
+            "LINK": "LINK-USD",
+            "UNI": "UNI-USD",
+            "AAVE": "AAVE-USD",
+        }
+    
+    df = pd.read_csv(CRYPTO_UNIVERSE_CSV)
+    mapping = {}
+    
+    for _, row in df.iterrows():
+        symbol = row['symbol']
+        # yfinance uses format: SYMBOL-USD
+        mapping[symbol] = f"{symbol}-USD"
+    
+    return mapping
 
 
 def main():
@@ -57,8 +79,14 @@ def main():
     print(f"  Tickers: {df['ticker'].unique().tolist()}")
     print()
     
-    # Step 2: Initialize news fetcher and LLM signal generator
-    print("Step 2: Initializing news fetcher and LLM analyzer...")
+    # Step 2: Load ticker mapping (v1.2: from CSV for all 28+ assets)
+    print("Step 2: Loading ticker mapping...")
+    ticker_mapping = load_ticker_mapping()
+    print(f"✓ Loaded mapping for {len(ticker_mapping)} assets")
+    print()
+    
+    # Step 3: Initialize news fetcher and LLM signal generator
+    print("Step 3: Initializing news fetcher and LLM analyzer...")
     try:
         news_fetcher = NewsFetcher()
         llm_signal = LLMCryptoSignal()
@@ -69,8 +97,8 @@ def main():
         print(f"✗ Error initializing services: {e}")
         sys.exit(1)
     
-    # Step 3: Process each ticker
-    print("Step 3: Fetching news and generating utility scores...")
+    # Step 4: Process each ticker
+    print("Step 4: Fetching news and generating utility scores...")
     print()
     
     ticker_scores = {}
@@ -79,8 +107,8 @@ def main():
     for ticker in unique_tickers:
         print(f"Processing {ticker}...")
         
-        # Get yfinance symbol
-        yf_symbol = TICKER_MAPPING.get(ticker, f"{ticker}-USD")
+        # Get yfinance symbol (use mapping or fallback to {ticker}-USD)
+        yf_symbol = ticker_mapping.get(ticker, f"{ticker}-USD")
         
         # Fetch recent news (last 30 days)
         print(f"  Fetching news for {yf_symbol}...")

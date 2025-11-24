@@ -18,8 +18,8 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from execution.models import TargetPortfolio
-from strategy.optimizer.mean_variance import MeanVarianceOptimizer
-from strategy.risk.covariance import CovarianceCalculator
+from strategy.optimizer.sortino_solver import SortinoRatioOptimizer
+from strategy.risk.semicovariance import SemicovarianceCalculator
 from strategy.rl.fast_env import FastCryptoEnv
 
 
@@ -198,23 +198,25 @@ class PPOStrategy:
         print(f"  Assets: {self.asset_list}")
         print(f"  Observation space: {self.norm_env.observation_space.shape}")
         
-        # Initialize Bicameral Brain components (v2.1)
+        # Initialize Bicameral Brain components (v2.1 - Sortino Edition)
         # Optimizer config defaults (can be overridden)
         opt_config = optimizer_config or {}
         lookback_days = opt_config.get("lookback_days", 90)
-        method = opt_config.get("method", "max_sharpe")
+        benchmark_rate = opt_config.get("benchmark_rate", 0.0)
         risk_free_rate = opt_config.get("risk_free_rate", 0.0)
         
-        # Initialize Quant Risk Manager (Covariance Calculator)
-        self.covariance_calc = CovarianceCalculator(lookback_days=lookback_days)
-        print(f"✓ Covariance Calculator initialized (lookback: {lookback_days} days)")
-        
-        # Initialize Optimizer (The Negotiator)
-        self.optimizer = MeanVarianceOptimizer(
-            method=method,
-            risk_free_rate=risk_free_rate
+        # Initialize Downside Risk Manager (Semicovariance Calculator)
+        # This calculates downside risk only (ignores "good" volatility)
+        self.risk_calc = SemicovarianceCalculator(
+            lookback_days=lookback_days,
+            benchmark_rate=benchmark_rate
         )
-        print(f"✓ Mean-Variance Optimizer initialized (method: {method})")
+        print(f"✓ Semicovariance Calculator initialized (lookback: {lookback_days} days, benchmark: {benchmark_rate})")
+        
+        # Initialize Sortino Ratio Optimizer (The Negotiator)
+        # This maximizes Sortino Ratio (return per unit of downside risk)
+        self.solver = SortinoRatioOptimizer(risk_free_rate=risk_free_rate)
+        print(f"✓ Sortino Ratio Optimizer initialized (risk-free rate: {risk_free_rate})")
     
     def _prepare_observation(self, df: pd.DataFrame) -> np.ndarray:
         """
@@ -457,11 +459,11 @@ class PPOStrategy:
         print(f"  ✓ PPO Raw Scores: {dict(expected_returns.head(5))}...")
         
         # ============================================================
-        # STEP B: Quant Risk Manager - Calculate Covariance Matrix
+        # STEP B: Downside Risk Manager - Calculate Semicovariance Matrix
         # ============================================================
-        print("📊 Quant Risk Manager: Calculating covariance matrix...")
+        print("📉 Downside Risk Manager: Calculating semicovariance matrix...")
         
-        # Prepare price DataFrame for covariance calculation
+        # Prepare price DataFrame for semicovariance calculation
         # Need format: Index=Date, Columns=Tickers, Values=Close prices
         price_pivot = df.pivot_table(
             index='timestamp',
@@ -481,26 +483,28 @@ class PPOStrategy:
         price_pivot = price_pivot[common_assets]
         expected_returns = expected_returns[common_assets]
         
-        # Calculate covariance matrix
+        # Calculate semicovariance matrix (downside risk only)
+        # This ignores "good" volatility (upside moves) and only considers "bad" volatility (downside moves)
         try:
-            cov_matrix = self.covariance_calc.get_covariance_matrix(price_pivot)
-            print(f"  ✓ Covariance matrix calculated: {cov_matrix.shape}")
+            downside_risk_matrix = self.risk_calc.get_risk_matrix(price_pivot)
+            print(f"  ✓ Semicovariance matrix calculated: {downside_risk_matrix.shape}")
         except Exception as e:
-            print(f"  ⚠ Warning: Covariance calculation failed ({e}), using equal weights")
-            # Fallback to equal weights if covariance fails
+            print(f"  ⚠ Warning: Semicovariance calculation failed ({e}), using equal weights")
+            # Fallback to equal weights if semicovariance fails
             n_assets = len(common_assets)
             weights_dict = {f"{asset}/USD": 1.0 / n_assets for asset in common_assets}
             return TargetPortfolio(weights=weights_dict)
         
         # ============================================================
-        # STEP C: Optimizer (The Negotiator) - Solve MVO Problem
+        # STEP C: Sortino Optimizer (The Negotiator) - Maximize Sortino Ratio
         # ============================================================
-        print("⚖️ Optimizer: Solving mean-variance optimization...")
+        print("⚖️ Sortino Optimizer: Solving for maximum Sortino Ratio...")
         
         try:
             # Solve the optimization problem
-            target = self.optimizer.optimize(expected_returns, cov_matrix)
-            print(f"  ✓ Optimization complete: {len(target.weights)} assets selected")
+            # max_sharpe() with semicovariance matrix = max_sortino()
+            target = self.solver.optimize(expected_returns, downside_risk_matrix)
+            print(f"  ✓ Optimization complete: {len(target.weights)} assets selected (maximizing Sortino Ratio)")
             return target
         except Exception as e:
             print(f"  ⚠ Warning: Optimization failed ({e}), using equal weights")

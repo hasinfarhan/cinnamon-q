@@ -136,13 +136,12 @@ class BotOrchestrator:
             if not data_path.is_absolute():
                 data_path = project_root / data_path
             
-            # Extract optimizer config (for Bicameral Brain v2.1)
+            # Extract optimizer config (for Bicameral Brain v2.1 - Sortino Edition)
             optimizer_config = None
             if self.config.optimizer:
                 optimizer_config = {
-                    "method": self.config.optimizer.method,
-                    "risk_aversion": self.config.optimizer.risk_aversion,
                     "lookback_days": self.config.optimizer.lookback_days,
+                    "benchmark_rate": self.config.optimizer.benchmark_rate,
                     "risk_free_rate": self.config.optimizer.risk_free_rate
                 }
             

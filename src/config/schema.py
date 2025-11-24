@@ -104,31 +104,25 @@ class DataConfig(BaseModel):
 
 class OptimizerConfig(BaseModel):
     """
-    Portfolio optimizer configuration (Bicameral Brain v2.1).
+    Portfolio optimizer configuration (Bicameral Brain v2.1 - Sortino Edition).
     
     Attributes:
-        method: Optimization method (max_sharpe, min_volatility, etc.)
-        risk_aversion: Risk aversion parameter for quadratic utility
-        lookback_days: Days of history for covariance calculation
-        risk_free_rate: Risk-free rate for Sharpe ratio calculation
+        lookback_days: Days of history for semicovariance calculation
+        benchmark_rate: Benchmark return rate (returns below this are "downside")
+        risk_free_rate: Risk-free rate for Sortino ratio calculation
     """
-    method: str = Field(
-        default="max_sharpe",
-        description="Optimization method: max_sharpe, min_volatility, efficient_risk, efficient_return"
-    )
-    risk_aversion: float = Field(
-        default=1.0,
-        ge=0.0,
-        description="Risk aversion parameter (higher = more risk averse)"
-    )
     lookback_days: int = Field(
         default=90,
         ge=7,
-        description="Days of history for covariance matrix calculation (minimum 7)"
+        description="Days of history for semicovariance matrix calculation (minimum 7)"
+    )
+    benchmark_rate: float = Field(
+        default=0.0,
+        description="Benchmark return rate. Returns below this are considered 'downside' (default: 0.0)"
     )
     risk_free_rate: float = Field(
         default=0.0,
-        description="Risk-free rate for Sharpe ratio calculation (0.0 for crypto)"
+        description="Risk-free rate for Sortino ratio calculation (0.0 for crypto)"
     )
     
     model_config = {"frozen": True}

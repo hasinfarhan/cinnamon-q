@@ -33,12 +33,11 @@ execution:
   provider: "alpaca"
   paper: true  # Use paper trading (set to false for live trading)
 
-# Optimizer configuration (Bicameral Brain v2.1)
+# Optimizer configuration (Bicameral Brain v2.1 - Sortino Edition)
 optimizer:
-  method: "max_sharpe"  # Options: "max_sharpe", "min_volatility", "efficient_risk", "efficient_return"
-  risk_aversion: 1.0  # For quadratic utility (higher = more risk averse)
-  lookback_days: 90  # Days of history for covariance matrix calculation
-  risk_free_rate: 0.0  # Risk-free rate for Sharpe ratio calculation (0.0 for crypto)
+  lookback_days: 90  # Days of history for semicovariance matrix calculation
+  benchmark_rate: 0.0  # Benchmark return rate (returns below this are "downside", default: 0.0)
+  risk_free_rate: 0.0  # Risk-free rate for Sortino ratio calculation (0.0 for crypto)
 
 # Data configuration (for data fetcher)
 data:

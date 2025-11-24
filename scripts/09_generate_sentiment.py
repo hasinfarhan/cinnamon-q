@@ -165,9 +165,17 @@ def main():
     print("Step 5: Utility Score Summary...")
     for ticker, score in ticker_scores.items():
         ticker_data = df[df['ticker'] == ticker]
-        ticker_recent_mask = recent_mask[df['ticker'] == ticker]
-        recent_score = ticker_data.loc[ticker_recent_mask, 'utility_score'].mean()
-        print(f"  {ticker:6s}: Current Score = {score:.3f}, Recent Avg = {recent_score:.3f}")
+        # Fix: Filter ticker data first, then apply recent mask to that filtered data
+        ticker_recent_data = ticker_data[ticker_data['timestamp'] >= cutoff_date]
+        recent_score = ticker_recent_data['utility_score'].mean()
+        
+        # Handle NaN (no recent data for this ticker)
+        if pd.isna(recent_score):
+            recent_score_str = "nan"
+        else:
+            recent_score_str = f"{recent_score:.3f}"
+        
+        print(f"  {ticker:6s}: Current Score = {score:.3f}, Recent Avg = {recent_score_str}")
     print()
     
     # Step 6: Save enriched dataset

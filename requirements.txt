@@ -52,7 +52,7 @@ pyyaml>=6.0.0  # Required for YAML configuration files
 alpaca-trade-api>=3.0.0
 pydantic>=2.0.0
 requests>=2.31.0  # Required by alpaca-trade-api
-urllib3<2.0,>=1.26.0  # Compatible with Python 3.12 and alpaca-trade-api
+urllib3==1.26.18  # Compatible with Python 3.12 and alpaca-trade-api (specific version for stability)
 alpha-vantage>=2.3.1  # Required by alpaca-trade-api
 six>=1.16.0  # Required by urllib3 and alpaca-trade-api for Python 3.12 compatibility
 

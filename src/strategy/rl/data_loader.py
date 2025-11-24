@@ -100,11 +100,21 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
     
     # Pivot each feature separately
     # pivot() is faster than pivot_table() when we know there's one value per combination
-    returns_pivot = df.pivot(index='timestamp', columns='ticker', values='returns')
-    volatility_pivot = df.pivot(index='timestamp', columns='ticker', values='volatility')
-    commit_pivot = df.pivot(index='timestamp', columns='ticker', values='commit_count_norm')
-    utility_pivot = df.pivot(index='timestamp', columns='ticker', values='utility_score')
-    price_pivot = df.pivot(index='timestamp', columns='ticker', values='close')
+    # If duplicates exist, pivot() will raise ValueError, so we catch and use pivot_table as fallback
+    try:
+        returns_pivot = df.pivot(index='timestamp', columns='ticker', values='returns')
+        volatility_pivot = df.pivot(index='timestamp', columns='ticker', values='volatility')
+        commit_pivot = df.pivot(index='timestamp', columns='ticker', values='commit_count_norm')
+        utility_pivot = df.pivot(index='timestamp', columns='ticker', values='utility_score')
+        price_pivot = df.pivot(index='timestamp', columns='ticker', values='close')
+    except ValueError:
+        # Fallback to pivot_table if duplicates exist (shouldn't happen, but safe)
+        print("  Warning: Duplicates detected, using pivot_table() instead")
+        returns_pivot = df.pivot_table(index='timestamp', columns='ticker', values='returns', aggfunc='first')
+        volatility_pivot = df.pivot_table(index='timestamp', columns='ticker', values='volatility', aggfunc='first')
+        commit_pivot = df.pivot_table(index='timestamp', columns='ticker', values='commit_count_norm', aggfunc='first')
+        utility_pivot = df.pivot_table(index='timestamp', columns='ticker', values='utility_score', aggfunc='first')
+        price_pivot = df.pivot_table(index='timestamp', columns='ticker', values='close', aggfunc='first')
     
     # Ensure all pivots have the same index (timestamps) and columns (assets)
     # Reindex to ensure alignment and handle missing values

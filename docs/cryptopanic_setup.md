@@ -43,15 +43,25 @@ The `NewsFetcher` class:
 3. **Combines results** from both sources
 4. **Removes duplicates** and sorts by timestamp
 
-## API Limits
+## API Limits (Developer Tier)
 
-**Free Tier:**
-- 100 requests per day
-- Sufficient for daily sentiment generation
+**Current Tier: Developer**
+- **Rate Limit**: 2 requests per second
+- **Monthly Quota**: 100 requests per month
+- **Items Per Request**: 20 items maximum
+- **News Delay**: 24 hours (news is delayed by 24 hours)
+- **Support**: Basic
 
-**Paid Tiers:**
+**Note**: The code automatically:
+- Enforces 2 req/sec rate limiting (0.5 second delay between requests)
+- Caps requests at 20 items (Developer tier limit)
+- Tracks monthly quota usage
+- Falls back to yfinance if quota is exceeded
+
+**For Production**: Consider upgrading to a higher tier for:
+- Real-time news (no delay)
 - Higher rate limits
-- More features
+- More requests per month
 
 ## Troubleshooting
 

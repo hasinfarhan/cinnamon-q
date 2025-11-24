@@ -48,6 +48,11 @@ class NewsFetcher:
         # CryptoPanic API base URL
         self.cryptopanic_base_url = "https://cryptopanic.com/api/v1"
         
+        # Rate limiting for CryptoPanic (Developer tier: 2 req/sec, 100 req/mo)
+        self._last_cryptopanic_request = None
+        self._cryptopanic_request_count = 0
+        self._cryptopanic_monthly_limit = 100  # Developer tier limit
+        
         # Warn if CryptoPanic is enabled but no API key
         if self.use_cryptopanic and not self.cryptopanic_api_key:
             print("⚠ Warning: CryptoPanic enabled but no CRYPTOPANIC_API_KEY found.")
@@ -55,6 +60,9 @@ class NewsFetcher:
             print("  https://cryptopanic.com/developers/api/")
             print("  Falling back to yfinance only.")
             self.use_cryptopanic = False
+        elif self.use_cryptopanic and self.cryptopanic_api_key:
+            print("✓ CryptoPanic API key found - crypto-specific news enabled")
+            print(f"  Rate limit: 2 req/sec, Monthly quota: {self._cryptopanic_monthly_limit} requests")
     
     def _fetch_cryptopanic_news(
         self,
@@ -68,15 +76,39 @@ class NewsFetcher:
         CryptoPanic is crypto-specific and provides better quality headlines
         for cryptocurrency assets.
         
+        Note: Developer tier limits:
+        - 2 requests per second
+        - 100 requests per month
+        - 20 items per request
+        - 24 hour news delay
+        
         Args:
             symbol: Crypto symbol (e.g., "BTC", "ETH", "BTC-USD")
-            limit: Maximum number of headlines
+            limit: Maximum number of headlines (capped at 20 for Developer tier)
             days_back: Optional filter for recent news
         
         Returns:
             List of headline dictionaries
         """
         try:
+            # Rate limiting: Check monthly quota
+            if self._cryptopanic_request_count >= self._cryptopanic_monthly_limit:
+                print(f"⚠ CryptoPanic monthly quota reached ({self._cryptopanic_monthly_limit} requests)")
+                return []
+            
+            # Rate limiting: Enforce 2 req/sec (Developer tier)
+            if self._last_cryptopanic_request:
+                time_since_last = (datetime.now() - self._last_cryptopanic_request).total_seconds()
+                if time_since_last < 0.5:  # 2 req/sec = 0.5 seconds between requests
+                    import time
+                    time.sleep(0.5 - time_since_last)
+            
+            self._last_cryptopanic_request = datetime.now()
+            self._cryptopanic_request_count += 1
+            
+            # Developer tier limit: 20 items per request
+            if limit > 20:
+                limit = 20
             # CryptoPanic uses coin symbols without suffix (BTC, not BTC-USD)
             # Extract base symbol
             coin_symbol = symbol.replace("-USD", "").replace("/USD", "").upper()

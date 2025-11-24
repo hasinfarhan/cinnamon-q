@@ -22,8 +22,10 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
     parallel environments. It saves the preprocessed arrays to disk, which
     subprocesses can then access via memory-mapped files (zero-copy, instant).
     
+    Phase 5.1: Now includes Technical Analysis features (RSI, MACD, BBW, ATR, SMA Ratio).
+    
     Args:
-        data_path: Path to crypto_training_data.parquet
+        data_path: Path to crypto_deep_v2.parquet (with TA features) or crypto_training_data.parquet (fallback)
         temp_dir: Temporary directory to save .npy files
     
     Returns:
@@ -32,16 +34,22 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
             - 'volatility_path': Path to volatility_array.npy
             - 'commit_path': Path to commit_array.npy
             - 'utility_path': Path to utility_array.npy
+            - 'rsi_path': Path to rsi_array.npy (NEW)
+            - 'macd_path': Path to macd_array.npy (NEW)
+            - 'bbw_path': Path to bbw_array.npy (NEW)
+            - 'atr_path': Path to atr_array.npy (NEW)
+            - 'sma_ratio_path': Path to sma_ratio_array.npy (NEW)
             - 'price_path': Path to price_array.npy
             - 'asset_list': List of asset symbols
             - 'timestamps': List of timestamps
             - 'n_steps': Number of timesteps
             - 'n_assets': Number of assets
+            - 'has_ta_features': Boolean indicating if TA features are present
     """
     if not data_path.exists():
         raise FileNotFoundError(
             f"Dataset not found: {data_path}\n"
-            "Please run scripts/09_generate_sentiment.py first."
+            "Please run scripts/12_enrich_data.py to generate crypto_deep_v2.parquet with TA features."
         )
     
     print("📊 Loading and optimizing crypto training data (Main Process)...")
@@ -49,6 +57,16 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
     # Load parquet file
     df = pd.read_parquet(data_path)
     df = df.sort_values(['timestamp', 'ticker']).reset_index(drop=True)
+    
+    # Check if TA features are present
+    ta_columns = ['RSI_14', 'MACD', 'BB_WIDTH', 'ATR_NORM', 'SMA_200_RATIO']
+    has_ta_features = all(col in df.columns for col in ta_columns)
+    
+    if has_ta_features:
+        print("  ✓ Technical Analysis features detected (RSI, MACD, BBW, ATR, SMA Ratio)")
+    else:
+        print("  ⚠ Technical Analysis features not found. Calculating basic features only.")
+        print("     For best results, use crypto_deep_v2.parquet (run scripts/12_enrich_data.py)")
     
     # Get unique assets and timestamps
     asset_list = sorted(df['ticker'].unique().tolist())
@@ -85,6 +103,39 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
     # Ensure utility_score is valid (vectorized)
     df['utility_score'] = df['utility_score'].fillna(0.5).clip(0.0, 1.0)
     
+    # Normalize TA features if present (per asset, vectorized)
+    if has_ta_features:
+        # RSI: Already 0-100, normalize to 0-1
+        df['RSI_14_norm'] = df.groupby('ticker')['RSI_14'].transform(
+            lambda x: (x - 0) / 100.0  # RSI is 0-100
+        ).fillna(0.5).clip(0.0, 1.0)
+        
+        # MACD: Normalize per asset (min-max)
+        macd_min = df.groupby('ticker')['MACD'].transform('min')
+        macd_max = df.groupby('ticker')['MACD'].transform('max')
+        macd_range = macd_max - macd_min
+        df['MACD_norm'] = np.where(
+            macd_range > 0,
+            (df['MACD'] - macd_min) / macd_range,
+            0.0
+        ).fillna(0.0)
+        
+        # BB_WIDTH: Normalize per asset (min-max)
+        bbw_min = df.groupby('ticker')['BB_WIDTH'].transform('min')
+        bbw_max = df.groupby('ticker')['BB_WIDTH'].transform('max')
+        bbw_range = bbw_max - bbw_min
+        df['BB_WIDTH_norm'] = np.where(
+            bbw_range > 0,
+            (df['BB_WIDTH'] - bbw_min) / bbw_range,
+            0.0
+        ).fillna(0.0)
+        
+        # ATR_NORM: Already normalized, just ensure valid
+        df['ATR_NORM'] = df['ATR_NORM'].fillna(0.0).clip(0.0, 1.0)
+        
+        # SMA_200_RATIO: Already a ratio, just ensure valid
+        df['SMA_200_RATIO'] = df['SMA_200_RATIO'].fillna(1.0).clip(0.0, 2.0)  # Allow up to 2x
+    
     print("  Pivoting data to wide format (vectorized reshape)...")
     
     # VECTORIZED Pivot: Convert from long format to wide format
@@ -100,6 +151,14 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
         commit_pivot = df.pivot(index='timestamp', columns='ticker', values='commit_count_norm')
         utility_pivot = df.pivot(index='timestamp', columns='ticker', values='utility_score')
         price_pivot = df.pivot(index='timestamp', columns='ticker', values='close')
+        
+        # Pivot TA features if present
+        if has_ta_features:
+            rsi_pivot = df.pivot(index='timestamp', columns='ticker', values='RSI_14_norm')
+            macd_pivot = df.pivot(index='timestamp', columns='ticker', values='MACD_norm')
+            bbw_pivot = df.pivot(index='timestamp', columns='ticker', values='BB_WIDTH_norm')
+            atr_pivot = df.pivot(index='timestamp', columns='ticker', values='ATR_NORM')
+            sma_ratio_pivot = df.pivot(index='timestamp', columns='ticker', values='SMA_200_RATIO')
     except ValueError:
         # Fallback to pivot_table if duplicates exist (shouldn't happen, but safe)
         print("  Warning: Duplicates detected, using pivot_table() instead")
@@ -108,6 +167,13 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
         commit_pivot = df.pivot_table(index='timestamp', columns='ticker', values='commit_count_norm', aggfunc='first')
         utility_pivot = df.pivot_table(index='timestamp', columns='ticker', values='utility_score', aggfunc='first')
         price_pivot = df.pivot_table(index='timestamp', columns='ticker', values='close', aggfunc='first')
+        
+        if has_ta_features:
+            rsi_pivot = df.pivot_table(index='timestamp', columns='ticker', values='RSI_14_norm', aggfunc='first')
+            macd_pivot = df.pivot_table(index='timestamp', columns='ticker', values='MACD_norm', aggfunc='first')
+            bbw_pivot = df.pivot_table(index='timestamp', columns='ticker', values='BB_WIDTH_norm', aggfunc='first')
+            atr_pivot = df.pivot_table(index='timestamp', columns='ticker', values='ATR_NORM', aggfunc='first')
+            sma_ratio_pivot = df.pivot_table(index='timestamp', columns='ticker', values='SMA_200_RATIO', aggfunc='first')
     
     # Ensure all pivots have the same index (timestamps) and columns (assets)
     # Reindex to ensure alignment and handle missing values
@@ -131,12 +197,44 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
     price_pivot = price_pivot.reindex(index=common_index, columns=common_columns)
     price_pivot = price_pivot.ffill().fillna(0.0)
     
+    # Reindex TA features if present
+    if has_ta_features:
+        rsi_pivot = rsi_pivot.reindex(index=common_index, columns=common_columns)
+        rsi_pivot = rsi_pivot.ffill().fillna(0.5)  # RSI neutral = 50
+        
+        macd_pivot = macd_pivot.reindex(index=common_index, columns=common_columns)
+        macd_pivot = macd_pivot.ffill().fillna(0.0)  # MACD neutral = 0
+        
+        bbw_pivot = bbw_pivot.reindex(index=common_index, columns=common_columns)
+        bbw_pivot = bbw_pivot.ffill().fillna(0.0)
+        
+        atr_pivot = atr_pivot.reindex(index=common_index, columns=common_columns)
+        atr_pivot = atr_pivot.ffill().fillna(0.0)
+        
+        sma_ratio_pivot = sma_ratio_pivot.reindex(index=common_index, columns=common_columns)
+        sma_ratio_pivot = sma_ratio_pivot.ffill().fillna(1.0)  # SMA ratio neutral = 1.0
+    
     # Convert to numpy arrays (maintaining [n_steps, n_assets] shape)
     returns_array = returns_pivot.values.astype(np.float32)
     volatility_array = volatility_pivot.values.astype(np.float32)
     commit_array = commit_pivot.values.astype(np.float32)
     utility_array = utility_pivot.values.astype(np.float32)
     price_array = price_pivot.values.astype(np.float32)
+    
+    # Convert TA arrays if present
+    if has_ta_features:
+        rsi_array = rsi_pivot.values.astype(np.float32)
+        macd_array = macd_pivot.values.astype(np.float32)
+        bbw_array = bbw_pivot.values.astype(np.float32)
+        atr_array = atr_pivot.values.astype(np.float32)
+        sma_ratio_array = sma_ratio_pivot.values.astype(np.float32)
+    else:
+        # Create zero arrays for TA features (backward compatibility)
+        rsi_array = np.zeros((n_steps, n_assets), dtype=np.float32)
+        macd_array = np.zeros((n_steps, n_assets), dtype=np.float32)
+        bbw_array = np.zeros((n_steps, n_assets), dtype=np.float32)
+        atr_array = np.zeros((n_steps, n_assets), dtype=np.float32)
+        sma_ratio_array = np.ones((n_steps, n_assets), dtype=np.float32)  # Neutral = 1.0
     
     # Save arrays to disk for memory-mapped access
     # This avoids pickling overhead when passing to subprocesses

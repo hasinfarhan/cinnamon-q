@@ -314,15 +314,19 @@ def main():
         action, _states = model.predict(obs, deterministic=True)
         
         # Normalize for display
+        action = action.flatten()  # Ensure 1D array
         action_sum = action.sum()
         if action_sum > 0:
             normalized_weights = action / action_sum
         else:
             normalized_weights = action
         
+        # Convert to list for safe formatting
+        weights_list = normalized_weights.tolist()
+        
         print(f"    Step {i+1}:")
-        print(f"      Portfolio weights: {normalized_weights}")
-        print(f"      Cash weight: {normalized_weights[-1]:.3f}")
+        print(f"      Portfolio weights: {weights_list}")
+        print(f"      Cash weight: {weights_list[-1]:.3f}")
         
         obs, reward, done, info = test_env.step(action)
         

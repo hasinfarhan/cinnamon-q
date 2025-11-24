@@ -134,13 +134,19 @@ def main():
     print()
     
     # --- CREATE VECTORIZED ENVIRONMENT ---
-    print("Step 1: Creating vectorized environment...")
+    print("Step 2: Creating vectorized environment...")
     print(f"  Spawning {n_envs} parallel environments...")
     
+    start_init = time.time()
+    
+    # Create factory function with preprocessed data
+    # This avoids redundant file I/O in each subprocess
+    make_env_fn = make_env_factory(data_arrays)
+    
     # SubprocVecEnv = True parallelism (separate processes)
-    # Each process loads its own copy of the data (memory trade-off for speed)
+    # Each subprocess receives preprocessed arrays (efficient copy-on-write on Linux)
     env = make_vec_env(
-        make_env(data_path),
+        make_env_fn,
         n_envs=n_envs,
         vec_env_cls=SubprocVecEnv
     )
@@ -155,13 +161,15 @@ def main():
         training=True
     )
     
-    print(f"✓ Vectorized environment created")
+    init_time = time.time() - start_init
+    print(f"✅ Environments ready in {init_time:.2f}s")
+    print(f"   (Total startup time: {data_load_time + init_time:.2f}s)")
     print(f"  Observation space: {env.observation_space}")
     print(f"  Action space: {env.action_space}")
     print()
     
     # --- HYPERPARAMETERS FOR RTX 4070 Ti SUPER ---
-    print("Step 2: Configuring PPO with GPU-optimized hyperparameters...")
+    print("Step 3: Configuring PPO with GPU-optimized hyperparameters...")
     
     # Buffer Size = n_steps * n_envs
     # Target: ~32,000 steps per update

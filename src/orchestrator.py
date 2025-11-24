@@ -276,9 +276,19 @@ class BotOrchestrator:
             # Display target portfolio
             print("Target Portfolio:")
             if target.weights:
-                for ticker, weight in target.weights.items():
+                total_weight = sum(target.weights.values())
+                cash_weight = 1.0 - total_weight
+                
+                # Display all asset weights
+                for ticker, weight in sorted(target.weights.items(), key=lambda x: x[1], reverse=True):
                     print(f"  {ticker:10s}: {weight:6.2%}")
-                print(f"  {'Total':10s}: {sum(target.weights.values()):6.2%}")
+                
+                # Explicitly show cash if there's any
+                if cash_weight > 1e-6:  # Only show if > 0.0001%
+                    print(f"  {'CASH':10s}: {cash_weight:6.2%}")
+                
+                # Show total (should always be 100%)
+                print(f"  {'Total':10s}: {(total_weight + cash_weight):6.2%}")
             else:
                 print("  {} (100% Cash/Safety - Bear Market Detected)")
             print()

@@ -77,20 +77,64 @@ class NewsFetcher:
                 cutoff_date = datetime.now() - timedelta(days=days_back)
             
             for item in news_list[:limit]:
-                # Extract timestamp
+                # Extract timestamp - yfinance uses multiple formats
+                timestamp = None
+                
+                # Try providerPublishTime (Unix timestamp) first
                 provider_time = item.get('providerPublishTime', 0)
-                if not provider_time:
+                if provider_time:
+                    try:
+                        timestamp = datetime.fromtimestamp(provider_time)
+                    except (ValueError, OSError):
+                        pass
+                
+                # Fallback to pubDate (ISO string) - this is what yfinance actually uses
+                if not timestamp:
+                    pub_date = item.get('pubDate', '')
+                    if pub_date:
+                        try:
+                            # Parse ISO format: '2025-11-23T12:37:46Z'
+                            timestamp = datetime.fromisoformat(pub_date.replace('Z', '+00:00'))
+                        except (ValueError, AttributeError):
+                            # Try alternative parsing
+                            try:
+                                from dateutil import parser
+                                timestamp = parser.parse(pub_date)
+                            except:
+                                pass
+                
+                # If still no timestamp, try content.pubDate
+                if not timestamp:
+                    content = item.get('content', {})
+                    if isinstance(content, dict):
+                        pub_date = content.get('pubDate', '')
+                        if pub_date:
+                            try:
+                                timestamp = datetime.fromisoformat(pub_date.replace('Z', '+00:00'))
+                            except (ValueError, AttributeError):
+                                pass
+                
+                # Skip if we still don't have a timestamp
+                if not timestamp:
                     continue
-                    
-                timestamp = datetime.fromtimestamp(provider_time)
                 
                 # Filter by date if specified
                 if cutoff_date and timestamp < cutoff_date:
                     continue
                 
-                # Extract title and source
+                # Extract title - try multiple locations
                 title = item.get('title', '')
+                if not title:
+                    content = item.get('content', {})
+                    if isinstance(content, dict):
+                        title = content.get('title', '')
+                
+                # Extract source - try multiple locations
                 source = item.get('publisher', 'Unknown')
+                if source == 'Unknown':
+                    provider = item.get('provider', {})
+                    if isinstance(provider, dict):
+                        source = provider.get('displayName', 'Unknown')
                 
                 if title:
                     headlines.append({

@@ -68,6 +68,22 @@ class FastCryptoEnv(gym.Env):
             self.asset_list = data_config['asset_list']
             self.timestamps = data_config['timestamps']
             self.n_steps = data_config['n_steps']
+            self.has_ta_features = data_config.get('has_ta_features', False)
+            
+            # Load TA arrays if present
+            if self.has_ta_features:
+                self.rsi_array = np.load(data_config['rsi_path'], mmap_mode='r')
+                self.macd_array = np.load(data_config['macd_path'], mmap_mode='r')
+                self.bbw_array = np.load(data_config['bbw_path'], mmap_mode='r')
+                self.atr_array = np.load(data_config['atr_path'], mmap_mode='r')
+                self.sma_ratio_array = np.load(data_config['sma_ratio_path'], mmap_mode='r')
+            else:
+                # Create zero arrays for backward compatibility
+                self.rsi_array = np.zeros((self.n_steps, len(self.asset_list)), dtype=np.float32)
+                self.macd_array = np.zeros((self.n_steps, len(self.asset_list)), dtype=np.float32)
+                self.bbw_array = np.zeros((self.n_steps, len(self.asset_list)), dtype=np.float32)
+                self.atr_array = np.zeros((self.n_steps, len(self.asset_list)), dtype=np.float32)
+                self.sma_ratio_array = np.ones((self.n_steps, len(self.asset_list)), dtype=np.float32)
         else:
             # Legacy mode: load from file (for backward compatibility)
             if data_path is None:
@@ -92,11 +108,17 @@ class FastCryptoEnv(gym.Env):
             dtype=np.float32
         )
         
-        # Define observation space
-        # Features per asset: [return, volatility, commit_count_norm, utility_score]
-        # Plus: portfolio_value_norm, cash_weight
-        n_features_per_asset = 4
+        # Define observation space DYNAMICALLY
+        # Base features per asset: [return, volatility, commit_count_norm, utility_score] = 4
+        # TA features per asset (if present): [RSI, MACD, BBW, ATR, SMA_RATIO] = 5
+        # Plus: portfolio_value_norm, cash_weight = 2
+        
+        base_features_per_asset = 4
+        ta_features_per_asset = 5 if (hasattr(self, 'has_ta_features') and self.has_ta_features) else 0
+        n_features_per_asset = base_features_per_asset + ta_features_per_asset
         n_obs_features = (self.n_assets * n_features_per_asset) + 2
+        
+        self.n_features_per_asset = n_features_per_asset  # Store for observation construction
         
         self.observation_space = spaces.Box(
             low=-np.inf,
@@ -104,6 +126,11 @@ class FastCryptoEnv(gym.Env):
             shape=(n_obs_features,),
             dtype=np.float32
         )
+        
+        if ta_features_per_asset > 0:
+            print(f"  ✓ Observation space: {n_obs_features} features ({base_features_per_asset} base + {ta_features_per_asset} TA per asset)")
+        else:
+            print(f"  ✓ Observation space: {n_obs_features} features ({base_features_per_asset} base per asset, no TA)")
         
         # Initialize episode state
         self.current_step = 0
@@ -185,6 +212,9 @@ class FastCryptoEnv(gym.Env):
         """
         Construct observation vector using fast numpy operations.
         
+        Phase 5.1: Now includes TA features if available.
+        Feature order (per asset): [returns, volatility, commit_count, utility, RSI, MACD, BBW, ATR, SMA_RATIO]
+        
         Returns:
             Observation vector as float32 numpy array
         """
@@ -195,12 +225,24 @@ class FastCryptoEnv(gym.Env):
         idx = 0
         
         # For each asset, extract features (vectorized)
+        has_ta = hasattr(self, 'has_ta_features') and self.has_ta_features
+        
         for asset_idx in range(self.n_assets):
+            # Base features (always present)
             obs[idx] = self.returns_array[self.current_step, asset_idx]
             obs[idx + 1] = self.volatility_array[self.current_step, asset_idx]
             obs[idx + 2] = self.commit_array[self.current_step, asset_idx]
             obs[idx + 3] = self.utility_array[self.current_step, asset_idx]
             idx += 4
+            
+            # TA features (if present)
+            if has_ta:
+                obs[idx] = self.rsi_array[self.current_step, asset_idx]
+                obs[idx + 1] = self.macd_array[self.current_step, asset_idx]
+                obs[idx + 2] = self.bbw_array[self.current_step, asset_idx]
+                obs[idx + 3] = self.atr_array[self.current_step, asset_idx]
+                obs[idx + 4] = self.sma_ratio_array[self.current_step, asset_idx]
+                idx += 5
         
         # Add portfolio value (normalized)
         obs[idx] = self.portfolio_value / self.initial_cash

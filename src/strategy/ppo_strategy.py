@@ -18,6 +18,7 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from execution.models import TargetPortfolio
+from features.indicators import TechnicalAnalysis
 from strategy.optimizer.sortino_solver import SortinoRatioOptimizer
 from strategy.risk.semicovariance import SemicovarianceCalculator
 from strategy.rl.fast_env import FastCryptoEnv
@@ -222,11 +223,12 @@ class PPOStrategy:
         """
         Prepare observation vector from live data.
         
+        Phase 5.1: Now includes Technical Analysis features.
         This method replicates the feature engineering from FastCryptoEnv:
-        - Returns (pct_change)
-        - Volatility (rolling std)
-        - Normalized commit counts
-        - Utility scores
+        - Base features: Returns, Volatility, Commit Count (norm), Utility Score
+        - TA features: RSI, MACD, BBW, ATR, SMA_RATIO (if available)
+        
+        CRITICAL: Feature order must match training exactly to prevent "Brain Scramble".
         
         Args:
             df: DataFrame with market data (must have columns matching training data)
@@ -234,17 +236,27 @@ class PPOStrategy:
         Returns:
             Observation array with shape (1, n_features) ready for normalization
         """
+        # Step 1: Add TA features using TechnicalAnalysis (matches training pipeline)
+        ta = TechnicalAnalysis()
+        df = ta.add_all_features(df)
+        
         # Ensure data is sorted by timestamp and ticker
         df = df.sort_values(['timestamp', 'ticker']).reset_index(drop=True)
+        
+        # Check if TA features are present
+        ta_columns = ['RSI_14', 'MACD', 'BB_WIDTH', 'ATR_NORM', 'SMA_200_RATIO']
+        has_ta_features = all(col in df.columns for col in ta_columns)
         
         # Get the most recent timestamp
         latest_timestamp = df['timestamp'].max()
         latest_data = df[df['timestamp'] == latest_timestamp]
         
         # Initialize observation array
-        # Features per asset: [return, volatility, commit_count_norm, utility_score]
-        # Plus: portfolio_value_norm, cash_weight
-        n_features_per_asset = 4
+        # Base features per asset: 4 (returns, volatility, commit_count_norm, utility_score)
+        # TA features per asset: 5 (RSI, MACD, BBW, ATR, SMA_RATIO) if present
+        base_features_per_asset = 4
+        ta_features_per_asset = 5 if has_ta_features else 0
+        n_features_per_asset = base_features_per_asset + ta_features_per_asset
         n_obs_features = (self.n_assets * n_features_per_asset) + 2
         obs = np.zeros(n_obs_features, dtype=np.float32)
         
@@ -310,15 +322,76 @@ class PPOStrategy:
                     utility_score = float(utility_score)
                 utility_score = max(0.0, min(1.0, utility_score))  # Clip to [0, 1]
                 
+                # Base features (always present)
                 obs[idx] = returns
                 obs[idx + 1] = volatility
                 obs[idx + 2] = commit_count_norm
                 obs[idx + 3] = utility_score
+                idx += 4
+                
+                # TA features (if present, normalized to match training)
+                if has_ta_features:
+                    # RSI: Normalize 0-100 to 0-1
+                    rsi = row.get('RSI_14', 50.0)
+                    if pd.isna(rsi):
+                        rsi = 50.0
+                    rsi_norm = float(rsi) / 100.0
+                    obs[idx] = max(0.0, min(1.0, rsi_norm))
+                    
+                    # MACD: Normalize per asset (min-max)
+                    macd = row.get('MACD', 0.0)
+                    if pd.isna(macd):
+                        macd = 0.0
+                    asset_all_data = df[df['ticker'] == base_asset]
+                    macd_values = asset_all_data['MACD'].dropna()
+                    if len(macd_values) > 0:
+                        macd_min = macd_values.min()
+                        macd_max = macd_values.max()
+                        if macd_max > macd_min:
+                            macd_norm = (float(macd) - macd_min) / (macd_max - macd_min)
+                        else:
+                            macd_norm = 0.0
+                    else:
+                        macd_norm = 0.0
+                    obs[idx + 1] = max(0.0, min(1.0, macd_norm))
+                    
+                    # BBW: Normalize per asset (min-max)
+                    bbw = row.get('BB_WIDTH', 0.0)
+                    if pd.isna(bbw):
+                        bbw = 0.0
+                    bbw_values = asset_all_data['BB_WIDTH'].dropna()
+                    if len(bbw_values) > 0:
+                        bbw_min = bbw_values.min()
+                        bbw_max = bbw_values.max()
+                        if bbw_max > bbw_min:
+                            bbw_norm = (float(bbw) - bbw_min) / (bbw_max - bbw_min)
+                        else:
+                            bbw_norm = 0.0
+                    else:
+                        bbw_norm = 0.0
+                    obs[idx + 2] = max(0.0, min(1.0, bbw_norm))
+                    
+                    # ATR_NORM: Already normalized, just ensure valid
+                    atr_norm = row.get('ATR_NORM', 0.0)
+                    if pd.isna(atr_norm):
+                        atr_norm = 0.0
+                    obs[idx + 3] = max(0.0, min(1.0, float(atr_norm)))
+                    
+                    # SMA_200_RATIO: Already a ratio, just ensure valid
+                    sma_ratio = row.get('SMA_200_RATIO', 1.0)
+                    if pd.isna(sma_ratio):
+                        sma_ratio = 1.0
+                    obs[idx + 4] = max(0.0, min(2.0, float(sma_ratio)))  # Allow up to 2x
+                    
+                    idx += 5
             else:
-                # Asset not available, use zeros
+                # Asset not available, use zeros (or neutral for TA)
                 obs[idx:idx+4] = 0.0
-            
-            idx += 4
+                idx += 4
+                if has_ta_features:
+                    obs[idx:idx+4] = 0.0  # RSI, MACD, BBW, ATR = 0
+                    obs[idx + 4] = 1.0    # SMA_RATIO = 1.0 (neutral)
+                    idx += 5
         
         # Add portfolio value (normalized to initial cash)
         # For live trading, we'll use 1.0 (current portfolio value / initial)

@@ -103,6 +103,22 @@ def run_training(
     
     # Prepare training data (memory-mapped)
     logger.info("Preparing training data (memory-mapped)...")
+    logger.info(f"  Using data file: {data_path}")
+    
+    # Phase 5.1: Prefer crypto_deep_v2.parquet (with TA features) if available
+    if not data_path.exists():
+        # Try v2 first (with TA features)
+        v2_path = data_path.parent / "crypto_deep_v2.parquet"
+        if v2_path.exists():
+            logger.info(f"  Falling back to: {v2_path} (with TA features)")
+            data_path = v2_path
+        else:
+            # Try v1 (without TA features, backward compatible)
+            v1_path = data_path.parent / "crypto_training_data.parquet"
+            if v1_path.exists():
+                logger.warning(f"  Falling back to: {v1_path} (no TA features)")
+                data_path = v1_path
+    
     temp_dir = Path(tempfile.mkdtemp(prefix="hdrl_data_"))
     
     try:

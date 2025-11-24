@@ -174,8 +174,17 @@ def run_full_pipeline(
                 output_path=data_dir / "crypto_deep_v2.parquet"
             )
         else:
-            features_output = data_dir / "crypto_deep_v2.parquet"
-            logger.info("Skipping feature engineering stage (using existing data)")
+            # Phase 5.1: Prefer v2 (with TA), fallback to v1
+            v2_path = data_dir / "crypto_deep_v2.parquet"
+            v1_path = data_dir / "crypto_training_data.parquet"
+            if v2_path.exists():
+                features_output = v2_path
+                logger.info("Skipping feature engineering stage (using existing crypto_deep_v2.parquet)")
+            elif v1_path.exists():
+                features_output = v1_path
+                logger.warning("Skipping feature engineering stage (using crypto_training_data.parquet without TA)")
+            else:
+                raise FileNotFoundError(f"Neither {v2_path} nor {v1_path} found")
         
         # Stage 3: Model Training
         if not skip_training:

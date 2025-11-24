@@ -325,3 +325,22 @@ class TechnicalAnalysis:
             'ATR_NORM',
             'SMA_200_RATIO'
         ]
+    
+    @staticmethod
+    def get_training_feature_columns() -> list:
+        """
+        Get the list of TA feature columns used in training (normalized versions).
+        
+        This is the SINGLE SOURCE OF TRUTH for feature selection.
+        Both training and inference must use this exact list to prevent "Brain Scramble".
+        
+        Returns:
+            List of normalized feature column names in training order
+        """
+        return [
+            'RSI_14_norm',      # RSI normalized to 0-1
+            'MACD_norm',        # MACD normalized per asset
+            'BB_WIDTH_norm',    # Bollinger Band Width normalized per asset
+            'ATR_NORM',         # Already normalized
+            'SMA_200_RATIO'     # Already a ratio
+        ]

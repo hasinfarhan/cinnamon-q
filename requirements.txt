@@ -54,7 +54,7 @@ pydantic>=2.0.0
 requests>=2.31.0  # Required by alpaca-trade-api
 urllib3<1.25  # Required by alpaca-trade-api (version constraint)
 alpha-vantage>=2.3.1  # Required by alpaca-trade-api
-six>=1.16.0  # Required by urllib3 for compatibility
+six>=1.16.0  # Required by urllib3 and alpaca-trade-api for Python 3.12 compatibility
 
 # Crypto data sources
 pycoingecko>=3.1.0  # CoinGecko API for crypto fundamentals

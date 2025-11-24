@@ -258,25 +258,30 @@ def evaluate_model(model: PPO, env: FastCryptoEnv, episodes: int = EVAL_EPISODES
     for episode in range(episodes):
         obs, info = env.reset()
         done = False
-        episode_returns = []
         step_count = 0
-        max_steps = 1000  # Safety limit
+        max_steps = 2000  # Safety limit (enough for full episode)
+        final_reward = 0.0
         
         while not done and step_count < max_steps:
-            # Predict action (obs needs to be normalized if using VecNormalize)
-            # For unwrapped env, obs is already in correct format
-            action, _ = model.predict(obs, deterministic=True)
+            # Predict action
+            # Note: obs from unwrapped env is already in correct format (not normalized)
+            # But model expects normalized obs, so we need to normalize it
+            # Actually, since we're using unwrapped env, we need to normalize obs manually
+            # For simplicity, we'll use the model's predict which handles normalization
+            # if the model was trained with VecNormalize
+            action, _ = model.predict(obs.reshape(1, -1), deterministic=True)
+            action = action.flatten()
             
             # Step environment
             obs, reward, done, truncated, info = env.step(action)
             step_count += 1
+            final_reward = reward  # Track final reward
             
             if truncated:
                 done = True
         
         # Calculate Sortino Ratio from final returns_history
         # FastCryptoEnv calculates reward as Sortino Ratio when history >= 30
-        # We can use the final reward, or calculate from returns_history
         if hasattr(env, 'returns_history') and len(env.returns_history) >= 30:
             # Use the full returns history (last 30 days) for Sortino
             returns_array = np.array(list(env.returns_history))
@@ -290,7 +295,7 @@ def evaluate_model(model: PPO, env: FastCryptoEnv, episodes: int = EVAL_EPISODES
         else:
             # Fallback: use final reward (FastCryptoEnv returns Sortino when history >= 30)
             # For shorter episodes, use daily return
-            sortino_ratios.append(float(reward) if reward > -1e6 else 0.0)
+            sortino_ratios.append(float(final_reward) if abs(final_reward) < 1e6 else 0.0)
     
     # Return average Sortino Ratio
     if len(sortino_ratios) > 0:

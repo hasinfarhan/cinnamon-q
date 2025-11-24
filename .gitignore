@@ -131,6 +131,7 @@ dmypy.json
 # Data Science specific
 # Large data files
 *.csv
+!data/raw/crypto_universe.csv  # Allow universe CSV (configuration file)
 *.xlsx
 *.xls
 *.parquet

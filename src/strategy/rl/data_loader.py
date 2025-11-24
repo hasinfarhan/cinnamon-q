@@ -89,54 +89,44 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
     
     # VECTORIZED Pivot: Convert from long format to wide format
     # This is the key optimization - replaces nested loops with C-level operations
-    # Result: [timestamp, ticker] -> [timestamp, ticker_returns, ticker_volatility, ...]
+    # Using pivot() instead of pivot_table() for better performance (no aggregation needed)
     
-    # Pivot each feature separately, then combine
-    returns_pivot = df.pivot_table(
-        index='timestamp', 
-        columns='ticker', 
-        values='returns',
-        aggfunc='first'  # Use first value if duplicates (shouldn't happen)
-    ).fillna(0.0)
+    # Create a complete index/column structure first
+    # This ensures all timestamp-ticker combinations exist
+    complete_index = pd.MultiIndex.from_product(
+        [timestamps, asset_list],
+        names=['timestamp', 'ticker']
+    )
     
-    volatility_pivot = df.pivot_table(
-        index='timestamp',
-        columns='ticker',
-        values='volatility',
-        aggfunc='first'
-    ).fillna(0.0)
-    
-    commit_pivot = df.pivot_table(
-        index='timestamp',
-        columns='ticker',
-        values='commit_count_norm',
-        aggfunc='first'
-    ).fillna(0.5)
-    
-    utility_pivot = df.pivot_table(
-        index='timestamp',
-        columns='ticker',
-        values='utility_score',
-        aggfunc='first'
-    ).fillna(0.5)
-    
-    price_pivot = df.pivot_table(
-        index='timestamp',
-        columns='ticker',
-        values='close',
-        aggfunc='first'
-    ).fillna(0.0)
+    # Pivot each feature separately
+    # pivot() is faster than pivot_table() when we know there's one value per combination
+    returns_pivot = df.pivot(index='timestamp', columns='ticker', values='returns')
+    volatility_pivot = df.pivot(index='timestamp', columns='ticker', values='volatility')
+    commit_pivot = df.pivot(index='timestamp', columns='ticker', values='commit_count_norm')
+    utility_pivot = df.pivot(index='timestamp', columns='ticker', values='utility_score')
+    price_pivot = df.pivot(index='timestamp', columns='ticker', values='close')
     
     # Ensure all pivots have the same index (timestamps) and columns (assets)
-    # Reindex to ensure alignment
-    common_index = timestamps
-    common_columns = asset_list
+    # Reindex to ensure alignment and handle missing values
+    common_index = pd.Index(timestamps, name='timestamp')
+    common_columns = pd.Index(asset_list, name='ticker')
     
-    returns_pivot = returns_pivot.reindex(index=common_index, columns=common_columns, fill_value=0.0)
-    volatility_pivot = volatility_pivot.reindex(index=common_index, columns=common_columns, fill_value=0.0)
-    commit_pivot = commit_pivot.reindex(index=common_index, columns=common_columns, fill_value=0.5)
-    utility_pivot = utility_pivot.reindex(index=common_index, columns=common_columns, fill_value=0.5)
-    price_pivot = price_pivot.reindex(index=common_index, columns=common_columns, fill_value=0.0)
+    # Reindex and fill missing values
+    # Use ffill (forward fill) to handle gaps, then fill remaining NaNs
+    returns_pivot = returns_pivot.reindex(index=common_index, columns=common_columns)
+    returns_pivot = returns_pivot.ffill().fillna(0.0)  # Forward fill then zero
+    
+    volatility_pivot = volatility_pivot.reindex(index=common_index, columns=common_columns)
+    volatility_pivot = volatility_pivot.ffill().fillna(0.0)
+    
+    commit_pivot = commit_pivot.reindex(index=common_index, columns=common_columns)
+    commit_pivot = commit_pivot.ffill().fillna(0.5)
+    
+    utility_pivot = utility_pivot.reindex(index=common_index, columns=common_columns)
+    utility_pivot = utility_pivot.ffill().fillna(0.5)
+    
+    price_pivot = price_pivot.reindex(index=common_index, columns=common_columns)
+    price_pivot = price_pivot.ffill().fillna(0.0)
     
     # Convert to numpy arrays (maintaining [n_steps, n_assets] shape)
     returns_array = returns_pivot.values.astype(np.float32)

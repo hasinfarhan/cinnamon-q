@@ -414,19 +414,47 @@ class PPOStrategy:
         # Map weights to asset dictionary
         # CRITICAL: Convert asset symbols to Alpaca-compliant format (add /USD for crypto)
         # This ensures the Execution Engine recognizes them as crypto and uses correct API endpoints
+        # Also filter out assets that don't have data in the fetched DataFrame
+        available_assets = set(df['ticker'].unique()) if 'ticker' in df.columns else set()
         weights_dict = {}
+        filtered_weights = []  # Track filtered weights for renormalization
+        
+        # Action array: [Asset1, Asset2, ..., AssetN, Cash]
+        # self.asset_list contains only assets (no cash), so len(action) = len(asset_list) + 1
         for i, asset in enumerate(self.asset_list):
             weight = float(action[i])
             if weight > 1e-6:  # Only include non-negligible weights
+                # Check if asset has data in the fetched DataFrame
+                # Strip /USD for comparison (data uses base symbols like "BTC")
+                base_asset = asset.replace('/USD', '') if '/USD' in asset else asset
+                if base_asset not in available_assets:
+                    # Asset has no data, skip it (don't allocate to assets without data)
+                    print(f"  ⚠ Skipping {asset}: No data available")
+                    filtered_weights.append(weight)
+                    continue
+                
                 # Convert to Alpaca crypto format: "BTC" -> "BTC/USD"
                 # This allows the Execution Engine to properly identify crypto vs stocks
                 if '/' not in asset and not asset.endswith('USD'):
                     # Add /USD suffix for crypto symbols
                     alpaca_symbol = f"{asset}/USD"
                 else:
-                    # Already in correct format or is "CASH"
+                    # Already in correct format
                     alpaca_symbol = asset
                 weights_dict[alpaca_symbol] = weight
+        
+        # Renormalize weights if we filtered out some assets
+        # The remaining weight (1.0 - sum(weights)) goes to cash
+        if filtered_weights:
+            filtered_total = sum(filtered_weights)
+            if weights_dict:
+                # Renormalize remaining weights to preserve relative allocation
+                current_total = sum(weights_dict.values())
+                if current_total > 1e-8:
+                    # Scale up remaining weights proportionally
+                    scale_factor = (current_total + filtered_total) / current_total
+                    for symbol in weights_dict:
+                        weights_dict[symbol] = weights_dict[symbol] * scale_factor
         
         # Cash weight is the last element
         # Note: TargetPortfolio doesn't have a cash field, but we can

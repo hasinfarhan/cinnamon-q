@@ -345,6 +345,11 @@ class TradingEngine:
             qty = result.get("filled_qty") or result.get("qty") or order.qty or 0.0
             if qty is None:
                 qty = 0.0
+            # Ensure qty is a number (convert string to float if needed)
+            try:
+                qty = float(qty) if qty != 0.0 else 0.0
+            except (ValueError, TypeError):
+                qty = float(order.qty) if order.qty is not None else 0.0
             
             # Get price: prefer filled_avg_price if available, otherwise use limit_price or 0.0
             # For market orders, we might not have a price yet (order is pending)
@@ -357,10 +362,15 @@ class TradingEngine:
             )
             if price is None:
                 price = 0.0
+            # Ensure price is a number (convert string to float if needed)
+            try:
+                price = float(price) if price != 0.0 else 0.0
+            except (ValueError, TypeError):
+                price = 0.0
             
             # Calculate notional: qty * price, or use order.notional if available
             if order.notional is not None and order.notional > 0:
-                notional = order.notional
+                notional = float(order.notional)
             elif qty > 0 and price > 0:
                 notional = qty * price
             else:

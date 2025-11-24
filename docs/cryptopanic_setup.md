@@ -58,10 +58,16 @@ The `NewsFetcher` class:
 - Tracks monthly quota usage
 - Falls back to yfinance if quota is exceeded
 
+**Important**: Developer tier has a **24-hour news delay**. This means:
+- News is delayed by 24 hours from publication
+- Recent news (< 24 hours) won't be available
+- This is fine for training data but limits real-time sentiment
+
 **For Production**: Consider upgrading to a higher tier for:
 - Real-time news (no delay)
 - Higher rate limits
 - More requests per month
+- Better support
 
 ## Troubleshooting
 

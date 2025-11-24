@@ -57,48 +57,93 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
     n_assets = len(asset_list)
     
     print(f"  Found {n_steps} timestamps, {n_assets} assets")
+    print("  Calculating features using vectorized operations...")
     
-    # Pre-allocate numpy arrays for maximum speed
-    # Shape: [n_steps, n_assets]
-    returns_array = np.zeros((n_steps, n_assets), dtype=np.float32)
-    volatility_array = np.zeros((n_steps, n_assets), dtype=np.float32)
-    commit_array = np.zeros((n_steps, n_assets), dtype=np.float32)
-    utility_array = np.zeros((n_steps, n_assets), dtype=np.float32)
-    price_array = np.zeros((n_steps, n_assets), dtype=np.float32)
+    # Sort by ticker and timestamp for efficient groupby operations
+    df = df.sort_values(['ticker', 'timestamp']).reset_index(drop=True)
     
-    # Process each asset
-    for asset_idx, asset in enumerate(asset_list):
-        asset_data = df[df['ticker'] == asset].sort_values('timestamp').reset_index(drop=True)
-        
-        # Calculate returns
-        asset_data['returns'] = asset_data['close'].pct_change().fillna(0.0)
-        
-        # Calculate volatility (rolling std)
-        asset_data['volatility'] = asset_data['returns'].rolling(window=7, min_periods=1).std().fillna(0.0)
-        
-        # Normalize commit_count
-        commit_min = asset_data['commit_count_4_weeks'].min()
-        commit_max = asset_data['commit_count_4_weeks'].max()
-        if commit_max > commit_min:
-            asset_data['commit_count_norm'] = (
-                (asset_data['commit_count_4_weeks'] - commit_min) / (commit_max - commit_min)
-            )
-        else:
-            asset_data['commit_count_norm'] = 0.5
-        
-        # Ensure utility_score is valid
-        asset_data['utility_score'] = asset_data['utility_score'].fillna(0.5).clip(0.0, 1.0)
-        
-        # Map to timestamps
-        for ts_idx, timestamp in enumerate(timestamps):
-            ts_data = asset_data[asset_data['timestamp'] == timestamp]
-            if len(ts_data) > 0:
-                row = ts_data.iloc[0]
-                returns_array[ts_idx, asset_idx] = float(row['returns'])
-                volatility_array[ts_idx, asset_idx] = float(row['volatility'])
-                commit_array[ts_idx, asset_idx] = float(row['commit_count_norm'])
-                utility_array[ts_idx, asset_idx] = float(row['utility_score'])
-                price_array[ts_idx, asset_idx] = float(row['close'])
+    # VECTORIZED Feature Engineering (Much faster than loops!)
+    # Calculate returns per asset using groupby (vectorized)
+    df['returns'] = df.groupby('ticker')['close'].pct_change().fillna(0.0)
+    
+    # Calculate volatility (rolling std) per asset using groupby (vectorized)
+    df['volatility'] = df.groupby('ticker')['returns'].transform(
+        lambda x: x.rolling(window=7, min_periods=1).std()
+    ).fillna(0.0)
+    
+    # Normalize commit_count per asset (vectorized)
+    # Group by ticker, calculate min/max, then normalize
+    commit_min = df.groupby('ticker')['commit_count_4_weeks'].transform('min')
+    commit_max = df.groupby('ticker')['commit_count_4_weeks'].transform('max')
+    commit_range = commit_max - commit_min
+    df['commit_count_norm'] = np.where(
+        commit_range > 0,
+        (df['commit_count_4_weeks'] - commit_min) / commit_range,
+        0.5  # Default if no range
+    )
+    
+    # Ensure utility_score is valid (vectorized)
+    df['utility_score'] = df['utility_score'].fillna(0.5).clip(0.0, 1.0)
+    
+    print("  Pivoting data to wide format (vectorized reshape)...")
+    
+    # VECTORIZED Pivot: Convert from long format to wide format
+    # This is the key optimization - replaces nested loops with C-level operations
+    # Result: [timestamp, ticker] -> [timestamp, ticker_returns, ticker_volatility, ...]
+    
+    # Pivot each feature separately, then combine
+    returns_pivot = df.pivot_table(
+        index='timestamp', 
+        columns='ticker', 
+        values='returns',
+        aggfunc='first'  # Use first value if duplicates (shouldn't happen)
+    ).fillna(0.0)
+    
+    volatility_pivot = df.pivot_table(
+        index='timestamp',
+        columns='ticker',
+        values='volatility',
+        aggfunc='first'
+    ).fillna(0.0)
+    
+    commit_pivot = df.pivot_table(
+        index='timestamp',
+        columns='ticker',
+        values='commit_count_norm',
+        aggfunc='first'
+    ).fillna(0.5)
+    
+    utility_pivot = df.pivot_table(
+        index='timestamp',
+        columns='ticker',
+        values='utility_score',
+        aggfunc='first'
+    ).fillna(0.5)
+    
+    price_pivot = df.pivot_table(
+        index='timestamp',
+        columns='ticker',
+        values='close',
+        aggfunc='first'
+    ).fillna(0.0)
+    
+    # Ensure all pivots have the same index (timestamps) and columns (assets)
+    # Reindex to ensure alignment
+    common_index = timestamps
+    common_columns = asset_list
+    
+    returns_pivot = returns_pivot.reindex(index=common_index, columns=common_columns, fill_value=0.0)
+    volatility_pivot = volatility_pivot.reindex(index=common_index, columns=common_columns, fill_value=0.0)
+    commit_pivot = commit_pivot.reindex(index=common_index, columns=common_columns, fill_value=0.5)
+    utility_pivot = utility_pivot.reindex(index=common_index, columns=common_columns, fill_value=0.5)
+    price_pivot = price_pivot.reindex(index=common_index, columns=common_columns, fill_value=0.0)
+    
+    # Convert to numpy arrays (maintaining [n_steps, n_assets] shape)
+    returns_array = returns_pivot.values.astype(np.float32)
+    volatility_array = volatility_pivot.values.astype(np.float32)
+    commit_array = commit_pivot.values.astype(np.float32)
+    utility_array = utility_pivot.values.astype(np.float32)
+    price_array = price_pivot.values.astype(np.float32)
     
     # Save arrays to disk for memory-mapped access
     # This avoids pickling overhead when passing to subprocesses

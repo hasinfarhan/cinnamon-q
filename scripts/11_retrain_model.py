@@ -198,10 +198,19 @@ def train_challenger(data_path: Path) -> Tuple[Path, Path]:
     print(f"   This is Transfer Learning - starting from Champion weights")
     print()
     
+    # Check if rich is available for progress bar
+    try:
+        import rich
+        use_progress_bar = True
+    except ImportError:
+        use_progress_bar = False
+        print("⚠ Progress bar disabled (rich not installed)")
+        print()
+    
     model.learn(
         total_timesteps=FINE_TUNE_TIMESTEPS,
         callback=eval_callback,
-        progress_bar=True
+        progress_bar=use_progress_bar
     )
     
     # Save Challenger model

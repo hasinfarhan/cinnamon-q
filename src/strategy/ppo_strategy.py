@@ -136,8 +136,11 @@ class PPOStrategy:
         idx = 0
         
         # For each asset, extract features (matching FastCryptoEnv structure)
+        # Note: asset_list may have symbols without /USD, but data file uses base symbols
         for asset in self.asset_list:
-            asset_data = latest_data[latest_data['ticker'] == asset]
+            # Strip /USD if present for data lookup (data file uses base symbols like "BTC")
+            base_asset = asset.replace('/USD', '') if '/USD' in asset else asset
+            asset_data = latest_data[latest_data['ticker'] == base_asset]
             
             if len(asset_data) > 0:
                 row = asset_data.iloc[0]
@@ -241,11 +244,21 @@ class PPOStrategy:
             action[-1] = 1.0
         
         # Map weights to asset dictionary
+        # CRITICAL: Convert asset symbols to Alpaca-compliant format (add /USD for crypto)
+        # This ensures the Execution Engine recognizes them as crypto and uses correct API endpoints
         weights_dict = {}
         for i, asset in enumerate(self.asset_list):
             weight = float(action[i])
             if weight > 1e-6:  # Only include non-negligible weights
-                weights_dict[asset] = weight
+                # Convert to Alpaca crypto format: "BTC" -> "BTC/USD"
+                # This allows the Execution Engine to properly identify crypto vs stocks
+                if '/' not in asset and not asset.endswith('USD'):
+                    # Add /USD suffix for crypto symbols
+                    alpaca_symbol = f"{asset}/USD"
+                else:
+                    # Already in correct format or is "CASH"
+                    alpaca_symbol = asset
+                weights_dict[alpaca_symbol] = weight
         
         # Cash weight is the last element
         # Note: TargetPortfolio doesn't have a cash field, but we can

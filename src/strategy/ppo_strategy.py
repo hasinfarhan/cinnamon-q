@@ -114,21 +114,57 @@ class PPOStrategy:
         # Load normalization statistics (CRITICAL)
         print(f"📦 Loading normalization statistics from: {vec_norm_path}")
         
-        # Load asset universe dynamically from CSV (v1.2: supports 17+ assets)
-        # CRITICAL: Must be sorted alphabetically to match training data order
+        # Load asset universe - CRITICAL: Must match training data exactly
+        # The model was trained on a specific set of assets, so we must use the same set
+        # Priority: 1) Provided asset_list, 2) Training data assets, 3) Universe CSV (filtered)
         if asset_list is None:
+            # First, try to get assets from the training data (most accurate)
+            # This ensures we use exactly the assets the model was trained on
             try:
-                # Try to load from universe CSV first
-                project_root = Path(__file__).parent.parent.parent
-                universe_csv = project_root / "data" / "raw" / "crypto_universe.csv"
-                self.asset_list = load_asset_universe(universe_csv)
-                print(f"✓ Loaded {len(self.asset_list)} assets from universe CSV")
-            except (FileNotFoundError, ValueError) as e:
-                # Fallback: Load from environment (for backward compatibility)
-                print(f"⚠ Warning: Could not load universe CSV: {e}")
-                print("  Falling back to environment asset list...")
-                temp_env = FastCryptoEnv(data_path=data_path)
-                self.asset_list = temp_env.assets
+                # Load a sample of the training data to get the asset list
+                df_sample = pd.read_parquet(data_path, columns=['ticker'])
+                training_assets = sorted(df_sample['ticker'].unique().tolist())
+                
+                # Convert to Alpaca format (add /USD if needed)
+                # Training data uses base symbols like "BTC", but we need "BTC/USD" for Alpaca
+                self.asset_list = []
+                for asset in training_assets:
+                    if '/' not in asset and not asset.endswith('USD'):
+                        self.asset_list.append(f"{asset}/USD")
+                    else:
+                        self.asset_list.append(asset)
+                
+                # Ensure sorted (matching training order)
+                self.asset_list = sorted(self.asset_list)
+                
+                print(f"✓ Loaded {len(self.asset_list)} assets from training data")
+                print(f"  Assets: {self.asset_list}")
+            except Exception as e:
+                # Fallback: Try universe CSV, but this may have more assets than training
+                print(f"⚠ Warning: Could not load assets from training data: {e}")
+                try:
+                    project_root = Path(__file__).parent.parent.parent
+                    universe_csv = project_root / "data" / "raw" / "crypto_universe.csv"
+                    all_assets = load_asset_universe(universe_csv)
+                    
+                    # Filter to only assets that exist in training data
+                    df_sample = pd.read_parquet(data_path, columns=['ticker'])
+                    training_assets = set(df_sample['ticker'].unique())
+                    
+                    # Filter universe assets to match training data
+                    self.asset_list = [
+                        asset for asset in all_assets
+                        if asset.replace('/USD', '') in training_assets or asset in training_assets
+                    ]
+                    self.asset_list = sorted(self.asset_list)
+                    
+                    print(f"✓ Loaded {len(self.asset_list)} assets from universe CSV (filtered to training data)")
+                except Exception as e2:
+                    # Last resort: Use environment (for backward compatibility)
+                    print(f"⚠ Warning: Could not load from CSV: {e2}")
+                    print("  Falling back to environment asset list...")
+                    temp_env = FastCryptoEnv(data_path=data_path)
+                    self.asset_list = temp_env.assets
         else:
             # Use provided asset list (but ensure it's sorted)
             self.asset_list = sorted(asset_list)

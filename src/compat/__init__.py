@@ -8,44 +8,35 @@ any problematic dependencies (like alpaca-trade-api).
 import sys
 import types
 
-# Fix urllib3.packages.six.moves for Python 3.12 compatibility
-# This must run BEFORE urllib3 is imported
+# Fix urllib3.packages.six for Python 3.12 compatibility
+# urllib3 1.26.x expects six to be in urllib3.packages.six, but it's not bundled
 def _patch_urllib3():
-    """Patch urllib3 to work with Python 3.12."""
-    # Use import hook to patch urllib3 before it's fully loaded
-    import importlib.util
-    
-    # Check if urllib3 is already in sys.modules
-    if 'urllib3' in sys.modules:
-        urllib3 = sys.modules['urllib3']
-    else:
-        # Pre-create the structure before urllib3 is imported
-        # This is a bit hacky but necessary for Python 3.12
-        try:
-            # Create mock urllib3 module structure
-            urllib3_mock = types.ModuleType('urllib3')
-            urllib3_mock.packages = types.ModuleType('packages')
-            urllib3_mock.packages.six = types.ModuleType('six')
-            urllib3_mock.packages.six.moves = types.ModuleType('moves')
+    """Patch urllib3 to use system six package."""
+    try:
+        import six
+        
+        # Pre-register urllib3.packages.six before urllib3 is imported
+        # This allows urllib3 to find six in the expected location
+        if 'urllib3.packages' not in sys.modules:
+            packages = types.ModuleType('packages')
+            sys.modules['urllib3.packages'] = packages
+        
+        if 'urllib3.packages.six' not in sys.modules:
+            # Make urllib3.packages.six point to the system six
+            sys.modules['urllib3.packages.six'] = six
             
-            # Try to import http_client from six.moves
-            try:
-                import six
-                from six.moves import http_client
-                urllib3_mock.packages.six.moves.http_client = http_client
-            except (ImportError, AttributeError):
-                # Create minimal mock
-                urllib3_mock.packages.six.moves.http_client = types.ModuleType('http_client')
-            
-            # Pre-register in sys.modules (this is the key!)
-            sys.modules['urllib3.packages'] = urllib3_mock.packages
-            sys.modules['urllib3.packages.six'] = urllib3_mock.packages.six
-            sys.modules['urllib3.packages.six.moves'] = urllib3_mock.packages.six.moves
-            sys.modules['urllib3.packages.six.moves.http_client'] = urllib3_mock.packages.six.moves.http_client
-            
-        except Exception:
-            # If pre-registration fails, try patching after import
-            pass
+            # Also ensure six.moves is accessible
+            if hasattr(six, 'moves'):
+                if 'urllib3.packages.six.moves' not in sys.modules:
+                    sys.modules['urllib3.packages.six.moves'] = six.moves
+                    
+                    # Ensure http_client is available
+                    if hasattr(six.moves, 'http_client'):
+                        sys.modules['urllib3.packages.six.moves.http_client'] = six.moves.http_client
+        
+    except ImportError:
+        # If six isn't available, we can't patch
+        pass
 
 # Run the patch immediately when this module is imported
 _patch_urllib3()

@@ -39,6 +39,7 @@ tensorboard = "*"
 sqlalchemy = "*"
 rich = "*"
 pyportfolioopt = "*"
+shap = "*"
 
 [dev-packages]
 

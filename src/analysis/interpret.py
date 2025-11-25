@@ -349,15 +349,27 @@ class ModelInterpreter:
         Get top K most important features based on mean absolute SHAP values.
         
         Args:
-            shap_values: SHAP values array (n_samples, n_features)
+            shap_values: SHAP values array (n_samples, n_features) or (n_samples, n_features, n_actions)
             feature_names: List of feature names
             top_k: Number of top features to return
         
         Returns:
             List of (feature_name, mean_abs_shap_value) tuples, sorted by importance
         """
-        # Calculate mean absolute SHAP value per feature
-        mean_abs_shap = np.mean(np.abs(shap_values), axis=0)
+        # Handle multi-dimensional SHAP values (if we have multiple actions)
+        if len(shap_values.shape) == 3:
+            # Average across actions first, then across samples
+            shap_values_2d = np.mean(np.abs(shap_values), axis=(0, 2))  # Average over samples and actions
+        else:
+            # Average across samples only
+            shap_values_2d = np.mean(np.abs(shap_values), axis=0)
+        
+        # Ensure we have a 1D array
+        if shap_values_2d.ndim > 1:
+            shap_values_2d = shap_values_2d.flatten()
+        
+        # Convert to list of floats
+        mean_abs_shap = [float(x) for x in shap_values_2d]
         
         # Sort by importance
         feature_importance = list(zip(feature_names, mean_abs_shap))

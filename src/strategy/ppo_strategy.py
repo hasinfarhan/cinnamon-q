@@ -216,6 +216,31 @@ class PPOStrategy:
         print(f"  Assets: {self.asset_list}")
         print(f"  Observation space: {self.norm_env.observation_space.shape}")
         
+        # Detect if model was trained with TA features
+        # Observation space size tells us: (n_assets * n_features_per_asset) + 2
+        # Base features: 4 per asset (returns, volatility, commit_count, utility_score)
+        # TA features: 5 per asset (RSI, MACD, BBW, ATR, SMA_RATIO)
+        # Portfolio features: 2 (portfolio_value, cash_weight)
+        obs_size = self.norm_env.observation_space.shape[0]
+        base_features_per_asset = 4
+        ta_features_per_asset = 5
+        portfolio_features = 2
+        expected_base_size = (self.n_assets * base_features_per_asset) + portfolio_features
+        expected_with_ta_size = (self.n_assets * (base_features_per_asset + ta_features_per_asset)) + portfolio_features
+        
+        if obs_size == expected_base_size:
+            self.model_has_ta_features = False
+            print(f"  Model type: Base features only (no TA)")
+        elif obs_size == expected_with_ta_size:
+            self.model_has_ta_features = True
+            print(f"  Model type: Base + TA features")
+        else:
+            # Fallback: assume no TA if size doesn't match exactly
+            self.model_has_ta_features = False
+            print(f"  ⚠ Warning: Observation size {obs_size} doesn't match expected sizes")
+            print(f"    Expected base: {expected_base_size}, with TA: {expected_with_ta_size}")
+            print(f"    Assuming no TA features")
+        
         # Initialize Bicameral Brain components (v2.1 - Sortino Edition)
         # Optimizer config defaults (can be overridden)
         opt_config = optimizer_config or {}
@@ -267,16 +292,18 @@ class PPOStrategy:
         Returns:
             Observation array with shape (1, n_features) ready for normalization
         """
-        # Step 1: Add TA features using TechnicalAnalysis (matches training pipeline)
-        ta = TechnicalAnalysis()
-        df = ta.add_all_features(df)
+        # Step 1: Add TA features ONLY if model was trained with them
+        # This prevents shape mismatch errors when model expects different feature count
+        if self.model_has_ta_features:
+            ta = TechnicalAnalysis()
+            df = ta.add_all_features(df)
         
         # Ensure data is sorted by timestamp and ticker
         df = df.sort_values(['timestamp', 'ticker']).reset_index(drop=True)
         
-        # Check if TA features are present
+        # Check if TA features are present (only if model expects them)
         ta_columns = ['RSI_14', 'MACD', 'BB_WIDTH', 'ATR_NORM', 'SMA_200_RATIO']
-        has_ta_features = all(col in df.columns for col in ta_columns)
+        has_ta_features = self.model_has_ta_features and all(col in df.columns for col in ta_columns)
         
         # Get the most recent timestamp
         latest_timestamp = df['timestamp'].max()

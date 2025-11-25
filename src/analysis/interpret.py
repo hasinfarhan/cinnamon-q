@@ -96,7 +96,7 @@ class ModelInterpreter:
             if temp_dir.exists():
                 shutil.rmtree(temp_dir)
     
-    def _prepare_background_data(self, sample_size: int = 1000) -> Tuple[np.ndarray, List[str]]:
+    def prepare_data(self, sample_size: int = 50) -> Tuple[np.ndarray, np.ndarray, List[str]]:
         """
         Prepare background and test data for SHAP explainer.
         
@@ -109,6 +109,22 @@ class ModelInterpreter:
         Returns:
             Tuple of (background_data, test_data, feature_names)
         """
+        return self._prepare_background_data(sample_size * 2)
+    
+    def _prepare_background_data(self, total_samples: int = 100) -> Tuple[np.ndarray, np.ndarray, List[str]]:
+        """
+        Prepare background and test data for SHAP explainer.
+        
+        Loads data from parquet, normalizes it, and splits into background
+        (for baseline) and test (to explain) sets.
+        
+        Args:
+            total_samples: Total number of samples to collect (will split in half)
+        
+        Returns:
+            Tuple of (background_data, test_data, feature_names)
+        """
+        sample_size = total_samples // 2
         logger.info(f"Preparing data ({sample_size} background + {sample_size} test samples)...")
         
         import tempfile
@@ -125,8 +141,7 @@ class ModelInterpreter:
             # Generate observations by stepping through the environment
             observations = []
             n_samples = 0
-            total_needed = sample_size * 2  # Background + test
-            max_steps = min(env.n_steps, total_needed * 2)
+            max_steps = min(env.n_steps, total_samples * 2)
             
             # Reset and collect observations
             obs, _ = env.reset()
@@ -134,7 +149,7 @@ class ModelInterpreter:
             n_samples += 1
             
             for step in range(max_steps):
-                if n_samples >= total_needed:
+                if n_samples >= total_samples:
                     break
                 
                 # Random action
@@ -148,9 +163,9 @@ class ModelInterpreter:
                 n_samples += 1
             
             # Split into background and test
-            all_obs = np.array(observations[:total_needed])
+            all_obs = np.array(observations[:total_samples])
             background = all_obs[:sample_size]
-            test = all_obs[sample_size:sample_size * 2]
+            test = all_obs[sample_size:sample_size * 2] if len(all_obs) > sample_size else all_obs[:sample_size]
             
             # Generate feature names
             feature_names = self._generate_feature_names(env, has_ta)

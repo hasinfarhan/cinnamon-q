@@ -70,30 +70,22 @@ def main():
     )
     print()
     
-    # Compute SHAP values
-    print("Step 2: Computing SHAP Values...")
-    print("  This may take 5-15 minutes depending on model size and hardware...")
+    # Prepare data
+    print("Step 2: Preparing Data...")
+    background, test, feature_names = interpreter.prepare_data(sample_size=50)
     print()
     
-    try:
-        shap_values, test_data, feature_names = interpreter.compute_feature_importance(
-            sample_size=500,  # Background samples (reduce for faster computation)
-            test_size=50,     # Test samples to explain
-            use_kernel=False  # Use DeepExplainer (faster) if available
-        )
-    except Exception as e:
-        print(f"⚠ DeepExplainer failed: {e}")
-        print("  Falling back to KernelExplainer (slower but more compatible)...")
-        shap_values, test_data, feature_names = interpreter.compute_feature_importance(
-            sample_size=200,  # Smaller background for KernelExplainer
-            test_size=30,     # Fewer test samples
-            use_kernel=True   # Use KernelExplainer
-        )
+    # Run SHAP analysis
+    print("Step 3: Running SHAP Analysis...")
+    print("  Using KernelExplainer (robust, but slower)")
+    print("  This may take 5-15 minutes...")
+    print()
     
+    shap_values = interpreter.run_analysis(background, test, feature_names)
     print()
     
     # Get top features
-    print("Step 3: Analyzing Feature Importance...")
+    print("Step 4: Analyzing Feature Importance...")
     top_features = interpreter.get_top_features(shap_values, feature_names, top_k=15)
     
     print()
@@ -104,7 +96,7 @@ def main():
     
     for rank, (feature, importance) in enumerate(top_features, 1):
         bar_length = int(importance * 100)  # Scale for visualization
-        bar = "█" * bar_length
+        bar = "█" * min(bar_length, 50)  # Cap bar length
         print(f"{rank:2d}. {feature:40s} {importance:8.4f} {bar}")
     
     print()
@@ -121,20 +113,24 @@ def main():
     if ta_features_found:
         print("✅ SUCCESS: Technical Analysis features are driving decisions!")
         print(f"   Found in top 10: {', '.join(ta_features_found)}")
+        print("   → The model IS using RSI, MACD, etc. (Deep Feature Engineering worked!)")
     else:
         print("⚠ WARNING: No TA features in top 10. Model may not be using them effectively.")
+        print("   → Consider: Model was trained without TA features, or TA features need better normalization")
     
     if utility_found:
         print("✅ SUCCESS: Utility Score (sentiment) is driving decisions!")
         print(f"   Found in top 10: {', '.join(utility_found)}")
+        print("   → The model IS using LLM sentiment scores (Halal validation working!)")
     else:
         print("⚠ WARNING: Utility Score not in top 10. Sentiment may not be influential.")
+        print("   → Consider: Sentiment scores may be too noisy, or model needs more training")
     
     print()
     
     # Generate visualization
-    print("Step 4: Generating Visualization...")
-    plot_path = interpreter.plot_summary(shap_values, feature_names)
+    print("Step 5: Generating Visualization...")
+    plot_path = interpreter.save_plot(shap_values, test, feature_names)
     print(f"✓ Summary plot saved to: {plot_path}")
     print()
     

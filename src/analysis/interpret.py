@@ -5,16 +5,18 @@ This module provides SHAP (Shapley Additive Explanations) analysis for
 understanding which features drive the PPO agent's decisions.
 
 Phase 5.3: The "Glass Box" - Making the AI's reasoning transparent.
+
+Uses KernelExplainer for robustness (works with any model structure).
 """
 
 import logging
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import shap
-import torch
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
@@ -26,11 +28,11 @@ logger = logging.getLogger(__name__)
 
 class ModelInterpreter:
     """
-    Interpreter for PPO models using SHAP values.
+    Interpreter for PPO models using SHAP values (KernelExplainer).
     
-    This class extracts the policy network from a trained PPO model and
-    uses SHAP to quantify the contribution of each feature to the model's
-    decisions.
+    This class uses SHAP KernelExplainer to quantify the contribution
+    of each feature to the model's decisions. KernelExplainer is model-agnostic
+    and works with any Python function, making it robust for SB3 models.
     """
     
     def __init__(self, model_path: Path, vec_norm_path: Path, data_path: Path):
@@ -51,20 +53,13 @@ class ModelInterpreter:
         self.model = PPO.load(str(model_path))
         logger.info("✓ Model loaded")
         
-        # Extract policy network
-        logger.info("Extracting policy network...")
-        self.policy_net = self._extract_policy_network()
-        logger.info(f"✓ Policy network extracted: {self._get_network_info()}")
-        
         # Load normalization stats
         logger.info(f"Loading normalization stats from {vec_norm_path}...")
         self.vec_norm = self._load_vec_normalize(vec_norm_path, data_path)
         logger.info("✓ Normalization stats loaded")
         
-        # Load data
-        logger.info(f"Loading data from {data_path}...")
+        # Store data path
         self.data_path = data_path
-        logger.info("✓ Data path stored (will load samples on demand)")
         
         # Feature names (will be set during analysis)
         self.feature_names: Optional[List[str]] = None
@@ -186,21 +181,21 @@ class ModelInterpreter:
     
     def _prepare_background_data(self, sample_size: int = 1000) -> Tuple[np.ndarray, List[str]]:
         """
-        Prepare background data for SHAP explainer.
+        Prepare background and test data for SHAP explainer.
         
-        SHAP needs a "background" dataset to compute baseline expectations.
-        We'll sample from the training data.
+        Loads data from parquet, normalizes it, and splits into background
+        (for baseline) and test (to explain) sets.
         
         Args:
-            sample_size: Number of samples to use as background
+            sample_size: Number of samples for background and test (each)
         
         Returns:
-            Tuple of (background_observations, feature_names)
+            Tuple of (background_data, test_data, feature_names)
         """
-        logger.info(f"Preparing background data ({sample_size} samples)...")
+        logger.info(f"Preparing data ({sample_size} background + {sample_size} test samples)...")
         
         import tempfile
-        temp_dir = Path(tempfile.mkdtemp(prefix="shap_bg_"))
+        temp_dir = Path(tempfile.mkdtemp(prefix="shap_data_"))
         
         try:
             # Load and preprocess data
@@ -213,7 +208,8 @@ class ModelInterpreter:
             # Generate observations by stepping through the environment
             observations = []
             n_samples = 0
-            max_steps = min(env.n_steps, sample_size * 2)  # Sample more than needed
+            total_needed = sample_size * 2  # Background + test
+            max_steps = min(env.n_steps, total_needed * 2)
             
             # Reset and collect observations
             obs, _ = env.reset()
@@ -221,7 +217,7 @@ class ModelInterpreter:
             n_samples += 1
             
             for step in range(max_steps):
-                if n_samples >= sample_size:
+                if n_samples >= total_needed:
                     break
                 
                 # Random action
@@ -234,16 +230,20 @@ class ModelInterpreter:
                 observations.append(obs.copy())
                 n_samples += 1
             
-            background = np.array(observations[:sample_size])
+            # Split into background and test
+            all_obs = np.array(observations[:total_needed])
+            background = all_obs[:sample_size]
+            test = all_obs[sample_size:sample_size * 2]
             
             # Generate feature names
             feature_names = self._generate_feature_names(env, has_ta)
+            self.feature_names = feature_names
             
-            logger.info(f"✓ Prepared {len(background)} background samples")
+            logger.info(f"✓ Prepared {len(background)} background + {len(test)} test samples")
             logger.info(f"  Observation shape: {background.shape}")
             logger.info(f"  Features: {len(feature_names)}")
             
-            return background, feature_names
+            return background, test, feature_names
             
         finally:
             import shutil
@@ -283,122 +283,67 @@ class ModelInterpreter:
         
         return names
     
-    def compute_feature_importance(
+    def run_analysis(
         self,
-        sample_size: int = 1000,
-        test_size: int = 100,
-        use_kernel: bool = False
-    ) -> Tuple[np.ndarray, np.ndarray, List[str]]:
+        background: np.ndarray,
+        test: np.ndarray,
+        feature_names: List[str]
+    ) -> np.ndarray:
         """
-        Compute SHAP values for feature importance analysis.
+        Run SHAP analysis using KernelExplainer.
         
         Args:
-            sample_size: Number of background samples
-            test_size: Number of test samples to explain
-            use_kernel: Use KernelExplainer instead of DeepExplainer (slower but more compatible)
+            background: Background data for baseline (n_samples, n_features)
+            test: Test data to explain (n_samples, n_features)
+            feature_names: List of feature names
         
         Returns:
-            Tuple of (shap_values, test_observations, feature_names)
+            SHAP values array (n_test_samples, n_features, n_actions)
         """
         logger.info("=" * 80)
-        logger.info("🧮 Computing SHAP Values")
+        logger.info("🧮 Computing SHAP Values (KernelExplainer)")
         logger.info("=" * 80)
+        logger.info("  This may take 5-15 minutes depending on model size...")
+        logger.info("  KernelExplainer is slower but more robust than DeepExplainer")
+        logger.info()
         
-        # Prepare background data
-        background, feature_names = self._prepare_background_data(sample_size)
-        self.feature_names = feature_names
+        # Initialize KernelExplainer
+        logger.info("Initializing KernelExplainer...")
+        explainer = shap.KernelExplainer(
+            self._predict_wrapper,
+            background
+        )
+        logger.info("✓ Explainer initialized")
         
-        # Prepare test data (sample from environment)
-        logger.info(f"Preparing test data ({test_size} samples)...")
-        import tempfile
-        temp_dir = Path(tempfile.mkdtemp(prefix="shap_test_"))
+        # Compute SHAP values
+        logger.info("Computing SHAP values (this is the slow part)...")
+        logger.info("  Progress will be shown by SHAP...")
         
-        try:
-            data_arrays = prepare_training_data(self.data_path, temp_dir)
-            env = FastCryptoEnv(data_config=data_arrays)
-            
-            test_observations = []
-            obs, _ = env.reset()
-            test_observations.append(obs.copy())
-            
-            for _ in range(test_size - 1):
-                action = env.action_space.sample()
-                obs, _, terminated, truncated, _ = env.step(action)
-                if terminated or truncated:
-                    obs, _ = env.reset()
-                test_observations.append(obs.copy())
-            
-            test_data = np.array(test_observations)
-            logger.info(f"✓ Prepared {len(test_data)} test samples")
-            
-        finally:
-            import shutil
-            if temp_dir.exists():
-                shutil.rmtree(temp_dir)
-        
-        # Normalize observations using VecNormalize
-        logger.info("Normalizing observations...")
-        background_norm = self.vec_norm.normalize_obs(background)
-        test_data_norm = self.vec_norm.normalize_obs(test_data)
-        
-        # Initialize SHAP explainer
-        logger.info("Initializing SHAP explainer...")
-        device = next(self.policy_net.parameters()).device
-        
-        if use_kernel or not torch.cuda.is_available():
-            # KernelExplainer (slower but more compatible)
-            logger.info("Using KernelExplainer (compatible but slower)...")
-            
-            def model_fn(x):
-                """Wrapper function for KernelExplainer."""
-                x_tensor = torch.tensor(x, dtype=torch.float32).to(device)
-                with torch.no_grad():
-                    output = self.policy_net(x_tensor)
-                return output.cpu().numpy()
-            
-            explainer = shap.KernelExplainer(
-                model_fn,
-                background_norm[:100]  # Use smaller background for KernelExplainer
-            )
-            
-            # Compute SHAP values (this may take a while)
-            logger.info("Computing SHAP values (this may take several minutes)...")
-            shap_values = explainer.shap_values(test_data_norm[:test_size], nsamples=100)
-            
-        else:
-            # DeepExplainer (faster, optimized for neural networks)
-            logger.info("Using DeepExplainer (optimized for neural networks)...")
-            
-            # Convert to tensors
-            background_tensor = torch.tensor(background_norm, dtype=torch.float32).to(device)
-            test_tensor = torch.tensor(test_data_norm[:test_size], dtype=torch.float32).to(device)
-            
-            explainer = shap.DeepExplainer(self.policy_net, background_tensor)
-            
-            # Compute SHAP values
-            logger.info("Computing SHAP values...")
-            shap_values = explainer.shap_values(test_tensor)
+        shap_values = explainer.shap_values(test, nsamples=100)
         
         # Handle multi-output (if model outputs multiple actions)
         if isinstance(shap_values, list):
             # For multi-output, take the mean absolute SHAP values across outputs
+            # This gives us overall feature importance
             shap_values = np.mean([np.abs(sv) for sv in shap_values], axis=0)
         
         logger.info(f"✓ SHAP values computed: shape {shap_values.shape}")
         
-        return shap_values, test_data_norm[:test_size], feature_names
+        return shap_values
     
-    def plot_summary(
+    def save_plot(
         self,
         shap_values: np.ndarray,
+        test_data: np.ndarray,
         feature_names: List[str],
         output_path: Optional[Path] = None
     ) -> Path:
         """
-        Generate SHAP summary plot (beeswarm plot).
+        Generate and save SHAP summary plot (beeswarm plot).
         
         Args:
-            shap_values: SHAP values array (n_samples, n_features)
+            shap_values: SHAP values array (n_samples, n_features) or (n_samples, n_features, n_actions)
+            test_data: Test data used for explanation (n_samples, n_features)
             feature_names: List of feature names
             output_path: Path to save the plot (default: reports/shap_summary.png)
         
@@ -413,15 +358,23 @@ class ModelInterpreter:
         
         logger.info(f"Generating SHAP summary plot...")
         
-        # Create summary plot
+        # Handle multi-dimensional SHAP values (if we have multiple actions)
+        # For summary plot, we want to show overall feature importance
+        if len(shap_values.shape) == 3:
+            # Average across actions
+            shap_values_2d = np.mean(np.abs(shap_values), axis=2)
+        else:
+            shap_values_2d = shap_values
+        
+        # Create summary plot (beeswarm plot)
         shap.summary_plot(
-            shap_values,
+            shap_values_2d,
+            test_data,
             feature_names=feature_names,
             show=False,
             plot_size=(12, 8)
         )
         
-        import matplotlib.pyplot as plt
         plt.tight_layout()
         plt.savefig(output_path, dpi=150, bbox_inches='tight')
         plt.close()

@@ -14,7 +14,7 @@ from typing import Dict, Optional
 
 import numpy as np
 import pandas as pd
-from stable_baselines3 import PPO
+from sb3_contrib import RecurrentPPO  # LSTM support
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from execution.models import TargetPortfolio
@@ -108,12 +108,29 @@ class PPOStrategy:
         if not data_path.exists():
             raise FileNotFoundError(f"Data file not found: {data_path}")
         
-        print(f"📦 Loading PPO model from: {model_path}")
+        print(f"📦 Loading RecurrentPPO (LSTM) model from: {model_path}")
         
-        # Load the trained PPO model
-        self.model = PPO.load(str(model_path))
+        # Load the trained RecurrentPPO model (supports both PPO and RecurrentPPO)
+        # RecurrentPPO.load() can load both types, but we'll try RecurrentPPO first
+        try:
+            self.model = RecurrentPPO.load(str(model_path))
+            self.is_lstm = True
+            print(f"✓ RecurrentPPO (LSTM) model loaded - Brain has MEMORY!")
+        except Exception:
+            # Fallback: Try loading as regular PPO (for backward compatibility)
+            from stable_baselines3 import PPO
+            self.model = PPO.load(str(model_path))
+            self.is_lstm = False
+            print(f"✓ PPO (MLP) model loaded - No memory (backward compatibility)")
         
-        print(f"✓ PPO model loaded")
+        # Initialize LSTM states for stateful inference (if LSTM model)
+        if self.is_lstm:
+            # LSTM states: (hidden_state, cell_state) for each LSTM layer
+            # Shape depends on policy_kwargs['lstm_hidden_size'] and 'n_lstm_layers'
+            # For now, initialize to None - will be set on first prediction
+            self.lstm_states = None
+            self.episode_starts = np.array([True])  # Start of episode flag
+            print(f"  LSTM state management initialized")
         
         # Load asset universe - CRITICAL: Must match training data exactly
         # The model was trained on a specific set of assets, so we must use the same set
@@ -218,6 +235,20 @@ class PPOStrategy:
         # This maximizes Sortino Ratio (return per unit of downside risk)
         self.solver = SortinoRatioOptimizer(risk_free_rate=risk_free_rate)
         print(f"✓ Sortino Ratio Optimizer initialized (risk-free rate: {risk_free_rate})")
+    
+    def reset_lstm_state(self):
+        """
+        Reset LSTM states (for new episodes or when restarting inference).
+        
+        This should be called when:
+        - Starting a new trading session
+        - After a significant market event (e.g., market crash)
+        - When you want the model to "forget" previous context
+        """
+        if self.is_lstm:
+            self.lstm_states = None
+            self.episode_starts = np.array([True])
+            print("🔄 LSTM states reset - Brain memory cleared")
     
     def _prepare_observation(self, df: pd.DataFrame) -> np.ndarray:
         """
@@ -489,13 +520,26 @@ class PPOStrategy:
         norm_obs = self.norm_env.normalize_obs(raw_obs)
         
         # ============================================================
-        # STEP A: ML Analyst (PPO) - Get Raw Alpha Scores
+        # STEP A: ML Analyst (PPO/LSTM) - Get Raw Alpha Scores
         # ============================================================
         print("🧠 PPO Analyst: Generating expected returns...")
         
-        # Predict action (raw output from PPO - DO NOT normalize/clip here!)
-        # deterministic=True for consistent behavior in production
-        action, _ = self.model.predict(norm_obs, deterministic=True)
+        # Predict action (raw output from PPO/LSTM - DO NOT normalize/clip here!)
+        # For LSTM models, we need to pass states and episode_starts
+        if self.is_lstm:
+            # LSTM models are stateful - maintain memory across predictions
+            # This allows the brain to remember market trends from previous 15-min ticks
+            action, self.lstm_states = self.model.predict(
+                norm_obs,
+                state=self.lstm_states,  # Previous LSTM hidden/cell states
+                episode_start=self.episode_starts,  # True if new episode, False if continuation
+                deterministic=True
+            )
+            # After prediction, this is a continuation (not a new episode)
+            self.episode_starts = np.array([False])
+        else:
+            # Regular PPO (MLP) - stateless prediction
+            action, _ = self.model.predict(norm_obs, deterministic=True)
         
         # Flatten action array
         action = action.flatten()

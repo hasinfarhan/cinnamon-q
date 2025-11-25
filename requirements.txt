@@ -10,6 +10,7 @@ quantstats>=0.0.59
 
 # Reinforcement learning
 stable-baselines3>=1.6.0
+sb3-contrib>=2.0.0  # Required for RecurrentPPO (LSTM support)
 finrl>=0.3.6
 tensorboard>=2.10.0  # Required for training visualization
 

@@ -25,7 +25,7 @@ sys.path.insert(0, str(project_root / "src"))
 
 import torch
 import numpy as np
-from stable_baselines3 import PPO
+from sb3_contrib import RecurrentPPO  # LSTM support
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize, DummyVecEnv
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.callbacks import (
@@ -98,8 +98,9 @@ def main():
     
     # --- PATHS ---
     data_path = project_root / "data" / "processed" / "crypto_training_data.parquet"
-    model_dir = project_root / "models" / "hdrl_optimized"
-    log_dir = project_root / "logs" / "hdrl_training_optimized"
+    # LSTM models go to separate directory for comparison
+    model_dir = project_root / "models" / "hdrl_lstm"
+    log_dir = project_root / "logs" / "hdrl_training_lstm"
     tensorboard_dir = log_dir / "tensorboard"
     
     model_dir.mkdir(parents=True, exist_ok=True)
@@ -188,38 +189,44 @@ def main():
     print(f"  Action space: {env.action_space}")
     print()
     
-    # --- HYPERPARAMETERS FOR RTX 4070 Ti SUPER ---
-    print("Step 3: Configuring PPO with GPU-optimized hyperparameters...")
+    # --- HYPERPARAMETERS FOR RTX 4070 Ti SUPER (LSTM EDITION) ---
+    print("Step 3: Configuring RecurrentPPO (LSTM) with GPU-optimized hyperparameters...")
     
-    # Buffer Size = n_steps * n_envs
-    # Target: ~32,000 steps per update
-    # 2048 * 16 = 32,768 steps per update
-    n_steps = 2048
+    # LSTM Configuration
+    # n_steps: Number of steps per environment per update
+    # For LSTM, this becomes the sequence length (temporal window)
+    # 128 steps = 128 timesteps of memory (e.g., 128 * 15min = 32 hours of history)
+    n_steps = 128  # Reduced from 2048 for LSTM (sequences are more expensive)
     
-    # Batch Size: Massive for GPU saturation
-    # 4070 Ti Super has 16GB VRAM, can handle large batches
-    # Powers of 2 are GPU-friendly
-    batch_size = 4096 if device == "cuda" else 256
+    # Batch Size: Must be divisible by n_steps
+    # For LSTM, smaller batches are often better (memory constraints)
+    batch_size = 256 if device == "cuda" else 64
     
-    # Policy: Deep & Wide Network
-    # Default is [64, 64] - too small for complex patterns
-    # [512, 512, 512] = 10x larger, GPU handles it easily
+    # LSTM Policy: MlpLstmPolicy combines MLP layers with LSTM memory
+    # lstm_hidden_size: Size of LSTM hidden state (memory capacity)
+    # n_lstm_layers: Number of LSTM layers (stacked for deeper memory)
     policy_kwargs = dict(
         net_arch=dict(
-            pi=[512, 512, 512],  # Policy network (actor)
-            vf=[512, 512, 512]   # Value network (critic)
+            pi=[256, 256],  # Policy network (actor) - MLP layers before LSTM
+            vf=[256, 256]   # Value network (critic) - MLP layers before LSTM
         ),
-        activation_fn=torch.nn.ReLU
+        activation_fn=torch.nn.ReLU,
+        lstm_hidden_size=256,  # LSTM hidden state size (memory capacity)
+        n_lstm_layers=1,       # Single LSTM layer (can increase for deeper memory)
+        enable_critic_lstm=True  # Use LSTM in value network too
     )
     
-    print(f"  n_steps: {n_steps}")
+    print(f"  Policy: MlpLstmPolicy (LSTM with Memory)")
+    print(f"  n_steps (sequence length): {n_steps}")
     print(f"  batch_size: {batch_size}")
-    print(f"  Network architecture: 512x512x512")
+    print(f"  MLP layers: 256x256")
+    print(f"  LSTM hidden size: {policy_kwargs['lstm_hidden_size']}")
+    print(f"  LSTM layers: {policy_kwargs['n_lstm_layers']}")
     print(f"  Buffer size per update: {n_steps * n_envs:,} steps")
     print()
     
-    model = PPO(
-        "MlpPolicy",
+    model = RecurrentPPO(
+        "MlpLstmPolicy",  # LSTM policy with memory
         env,
         verbose=1,
         device=device,
@@ -237,7 +244,8 @@ def main():
         tensorboard_log=str(tensorboard_dir) if _check_tensorboard() else None
     )
     
-    print("✓ PPO agent initialized")
+    print("✓ RecurrentPPO (LSTM) agent initialized")
+    print("  The brain now has MEMORY! It can learn temporal patterns.")
     print()
     
     # --- CALLBACKS ---
@@ -247,7 +255,7 @@ def main():
     checkpoint_callback = CheckpointCallback(
         save_freq=100000,  # Save every 100k steps
         save_path=str(model_dir),
-        name_prefix="hdrl_crypto_optimized"
+        name_prefix="hdrl_crypto_lstm"
     )
     
     # Evaluation callback: Track best model
@@ -295,14 +303,15 @@ def main():
     print()
     
     # --- TRAINING ---
-    print("Step 4: Starting training...")
+    print("Step 5: Starting LSTM training...")
     print("  Watch for increasing 'ep_rew_mean' in logs")
     print("  Training will use maximum hardware resources")
+    print("  LSTM training may take longer than MLP (sequence processing)")
     print()
     
     # Total timesteps: 10M for thorough training
-    # With 16 parallel envs, this is ~625k environment steps
-    # Should complete in <1 hour on RTX 4070 Ti Super
+    # With 16 parallel envs and LSTM sequences, this may take longer than MLP
+    # LSTM processes sequences, so effective training is deeper
     total_timesteps = 10_000_000
     
     start_time = time.time()
@@ -331,12 +340,13 @@ def main():
         print()
     finally:
         # Always save final model and normalization stats
-        print("Step 6: Saving final model and normalization stats...")
+        print("Step 6: Saving final LSTM model and normalization stats...")
         
         # Save final model state
         final_model_path = model_dir / "final_model"
         model.save(str(final_model_path))
-        print(f"✓ Final model saved to: {final_model_path}.zip")
+        print(f"✓ Final LSTM model saved to: {final_model_path}.zip")
+        print(f"  This model has MEMORY and can learn temporal patterns!")
         
         # Save normalization stats (critical for inference)
         vec_normalize_path = model_dir / "vec_normalize.pkl"

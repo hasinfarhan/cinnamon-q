@@ -237,7 +237,7 @@ class ModelInterpreter:
         logger.info("=" * 80)
         logger.info("  This may take 5-15 minutes depending on model size...")
         logger.info("  KernelExplainer is slower but more robust than DeepExplainer")
-        logger.info()
+        logger.info("")
         
         # Initialize KernelExplainer
         logger.info("Initializing KernelExplainer...")

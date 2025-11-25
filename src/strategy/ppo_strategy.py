@@ -212,6 +212,10 @@ class PPOStrategy:
         self.norm_env.training = False
         self.norm_env.norm_reward = False
         
+        # Store reference to norm_env for direct access (used in evaluation scripts)
+        # This allows evaluation scripts to normalize observations directly
+        self.norm_env = self.norm_env
+        
         print(f"✓ Normalization statistics loaded and frozen")
         print(f"  Assets: {self.asset_list}")
         print(f"  Observation space: {self.norm_env.observation_space.shape}")

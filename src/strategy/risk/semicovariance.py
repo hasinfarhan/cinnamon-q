@@ -93,7 +93,8 @@ class SemicovarianceCalculator:
         
         # Calculate percentage returns
         # pct_change() calculates (price_t - price_{t-1}) / price_{t-1}
-        returns = prices_filtered.pct_change().dropna()
+        # Use fill_method=None to avoid FutureWarning (we'll handle NaNs ourselves)
+        returns = prices_filtered.pct_change(fill_method=None).dropna()
         
         if returns.empty:
             raise ValueError("No valid returns calculated (all NaN after pct_change)")

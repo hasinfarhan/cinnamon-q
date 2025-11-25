@@ -219,30 +219,39 @@ def evaluate_model(
             step_count = 0
             max_steps = min(1000, total_steps - env.current_step)  # Limit episode length
             
+            # For evaluation, we'll use the model's raw action prediction
+            # This avoids the bicameral brain complexity (risk calculator + optimizer)
+            # which requires more data history than we have in the environment
             while not done and step_count < max_steps:
-                # Get target portfolio from strategy
+                # Get raw action from model (bypassing get_target_portfolio)
+                # This is simpler and faster for evaluation
                 try:
-                    target = strategy.get_target_portfolio(portfolio_value=episode_equity[-1])
+                    # Fetch data from environment's current state
+                    # The environment has the data, we just need to prepare observation
+                    # Get current observation from environment
+                    current_obs = obs.copy()
                     
-                    # Convert target portfolio to action vector
-                    # For evaluation, we'll use the weights directly
-                    action = np.zeros(len(strategy.asset_list) + 1)
+                    # Normalize observation using strategy's normalization
+                    norm_obs = strategy.norm_env.normalize_obs(current_obs.reshape(1, -1))
                     
-                    # Map target weights to action
-                    for i, asset in enumerate(strategy.asset_list):
-                        # Strip /USD if present
-                        base_asset = asset.replace('/USD', '') if '/USD' in asset else asset
-                        weight = target.weights.get(base_asset, 0.0)
-                        action[i] = weight
+                    # Predict action directly from model
+                    if strategy.is_lstm:
+                        action, strategy.lstm_states = strategy.model.predict(
+                            norm_obs,
+                            state=strategy.lstm_states,
+                            episode_start=np.array([step_count == 0]),  # True only on first step
+                            deterministic=True
+                        )
+                        strategy.episode_starts = np.array([False])
+                    else:
+                        action, _ = strategy.model.predict(norm_obs, deterministic=True)
                     
-                    # Cash weight
-                    action[-1] = target.weights.get('CASH', 0.0)
-                    
-                    # Normalize action (sum to 1.0)
+                    # Ensure action is valid (non-negative, sums to 1.0)
+                    action = np.clip(action, 0, 1)
                     action = action / (action.sum() + 1e-8)
                     
                 except Exception as e:
-                    print(f"    ⚠ Error getting target portfolio: {e}")
+                    print(f"    ⚠ Error predicting action: {e}")
                     # Use random action as fallback
                     action = env.action_space.sample()
                 

@@ -63,6 +63,30 @@ class ModelInterpreter:
         
         # Feature names (will be set during analysis)
         self.feature_names: Optional[List[str]] = None
+    
+    def _predict_wrapper(self, observations: np.ndarray) -> np.ndarray:
+        """
+        Wrapper function for SHAP KernelExplainer.
+        
+        This function takes observations and returns deterministic actions.
+        SHAP will call this function many times to compute feature importance.
+        
+        Args:
+            observations: Numpy array of observations (n_samples, n_features)
+        
+        Returns:
+            Numpy array of actions (n_samples, n_actions)
+        """
+        # Normalize observations using VecNormalize
+        obs_norm = self.vec_norm.normalize_obs(observations)
+        
+        # Predict actions (deterministic)
+        actions = []
+        for obs in obs_norm:
+            action, _ = self.model.predict(obs, deterministic=True)
+            actions.append(action)
+        
+        return np.array(actions)
         
     def _load_vec_normalize(self, vec_norm_path: Path, data_path: Path) -> VecNormalize:
         """

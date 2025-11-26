@@ -28,21 +28,41 @@ def main():
     print()
     
     # Paths
-    input_path = project_root / "data" / "processed" / "crypto_deep_master.parquet"
+    # Use crypto_training_data.parquet as input (has utility_score from sentiment analysis)
+    # Fallback to crypto_deep_master.parquet if training data doesn't exist
+    training_data_path = project_root / "data" / "processed" / "crypto_training_data.parquet"
+    master_data_path = project_root / "data" / "processed" / "crypto_deep_master.parquet"
     output_path = project_root / "data" / "processed" / "crypto_deep_v2.parquet"
     
     # Step 1: Load existing data
     print("Step 1: Loading existing data...")
-    if not input_path.exists():
+    if training_data_path.exists():
+        input_path = training_data_path
+        print(f"  ✓ Using crypto_training_data.parquet (includes sentiment/utility_score)")
+    elif master_data_path.exists():
+        input_path = master_data_path
+        print(f"  ⚠ Using crypto_deep_master.parquet (no utility_score - will use neutral 0.5)")
+    else:
         raise FileNotFoundError(
-            f"Input file not found: {input_path}\n"
-            "Please run scripts/08_fetch_crypto_deep.py first to generate the base dataset."
+            f"Input file not found: {training_data_path} or {master_data_path}\n"
+            "Please run scripts/08_fetch_crypto_deep.py and scripts/09_generate_sentiment.py first."
         )
     
     df = pd.read_parquet(input_path)
     print(f"  ✓ Loaded {len(df):,} rows")
     print(f"  ✓ Assets: {df['ticker'].nunique()}")
-    print(f"  ✓ Columns: {list(df.columns)}")
+    print(f"  ✓ Columns: {len(df.columns)} total")
+    
+    # Ensure utility_score exists (required for training)
+    if 'utility_score' not in df.columns:
+        print(f"  ⚠ Warning: utility_score not found, adding neutral values (0.5)")
+        df['utility_score'] = 0.5
+    
+    # Ensure commit_count_4_weeks exists (required for training)
+    if 'commit_count_4_weeks' not in df.columns:
+        print(f"  ⚠ Warning: commit_count_4_weeks not found, adding placeholder values (100.0)")
+        df['commit_count_4_weeks'] = 100.0
+    
     print()
     
     # Step 2: Initialize Technical Analysis calculator

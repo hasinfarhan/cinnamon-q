@@ -110,9 +110,16 @@ def main():
         print("⚠ Using crypto_training_data.parquet (no TA features)")
         print("  For best results, run: python scripts/12_enrich_data.py")
     
-    # LSTM models go to separate directory for comparison
-    model_dir = project_root / "models" / "hdrl_lstm"
-    log_dir = project_root / "logs" / "hdrl_training_lstm"
+    # Super Brain models go to separate directory (won't overwrite production)
+    # If v2 exists, this is Super Brain (LSTM + TA), otherwise regular LSTM
+    if v2_data_path.exists():
+        model_dir = project_root / "models" / "hdrl_super_brain"
+        log_dir = project_root / "logs" / "hdrl_training_super_brain"
+        print("  🧠 Super Brain mode: Training with TA features!")
+    else:
+        model_dir = project_root / "models" / "hdrl_lstm"
+        log_dir = project_root / "logs" / "hdrl_training_lstm"
+        print("  ⚠ Regular LSTM mode: No TA features available")
     tensorboard_dir = log_dir / "tensorboard"
     
     model_dir.mkdir(parents=True, exist_ok=True)

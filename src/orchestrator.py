@@ -27,6 +27,9 @@ from database.service import DatabaseService
 from execution.engine import TradingEngine
 from pipeline.runner import run_full_pipeline
 from strategy.allocators.top_k import TopKEqualWeight
+from strategy.benchmarks.buy_and_hold import BuyAndHoldStrategy
+from strategy.benchmarks.mean_reversion import MeanReversionStrategy
+from strategy.benchmarks.trend import TrendFollowingStrategy
 from strategy.engine import StrategyEngine
 from strategy.ppo_strategy import PPOStrategy
 from strategy.signals.momentum import MomentumSignal
@@ -135,6 +138,45 @@ class BotOrchestrator:
         Returns:
             StrategyEngine or PPOStrategy: Configured strategy instance
         """
+        # Handle benchmark strategies (simple, rule-based baselines)
+        if strategy_config.signal == "benchmark_hold":
+            # Buy and Hold: Equal weight for all assets
+            params = strategy_config.params
+            data_path = params.get("data_path", "data/processed/crypto_deep_v2.parquet")
+            data_path = project_root / data_path if not Path(data_path).is_absolute() else Path(data_path)
+            
+            return BuyAndHoldStrategy(data_path=data_path)
+        
+        if strategy_config.signal == "benchmark_mean_reversion":
+            # Mean Reversion: Buy dips, sell rips
+            params = strategy_config.params
+            data_path = params.get("data_path", "data/processed/crypto_deep_v2.parquet")
+            data_path = project_root / data_path if not Path(data_path).is_absolute() else Path(data_path)
+            
+            buy_threshold = params.get("buy_threshold", -0.05)
+            sell_threshold = params.get("sell_threshold", 0.05)
+            lookback_hours = params.get("lookback_hours", 24)
+            
+            return MeanReversionStrategy(
+                data_path=data_path,
+                buy_threshold=buy_threshold,
+                sell_threshold=sell_threshold,
+                lookback_hours=lookback_hours
+            )
+        
+        if strategy_config.signal == "benchmark_trend":
+            # Trend Following: SMA crossover
+            params = strategy_config.params
+            data_path = params.get("data_path", "data/processed/crypto_deep_v2.parquet")
+            data_path = project_root / data_path if not Path(data_path).is_absolute() else Path(data_path)
+            
+            window = params.get("window", 200)
+            
+            return TrendFollowingStrategy(
+                data_path=data_path,
+                window=window
+            )
+        
         # Handle PPO strategy
         if strategy_config.signal == "ppo":
             # Extract PPO-specific parameters

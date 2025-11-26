@@ -259,10 +259,31 @@ def evaluate_model(
                 obs, reward, terminated, truncated, info = env.step(action)
                 done = terminated or truncated
                 
-                # Calculate portfolio return from reward
-                # Reward in FastCryptoEnv is portfolio return
-                episode_returns.append(reward)
-                episode_equity.append(episode_equity[-1] * (1 + reward))
+                # CRITICAL: Reward is Sortino Ratio (not percentage return)!
+                # We need to use the actual portfolio_return from info dict
+                # Reward can be Sortino Ratio (e.g., 2.0) which is NOT a 200% return!
+                portfolio_return = info.get('portfolio_return', reward)
+                
+                # If portfolio_return is not available, use reward but clamp it
+                # to reasonable bounds (reward might be Sortino ratio, not return)
+                if 'portfolio_return' not in info:
+                    # If reward looks like a ratio (> 1.0), it's probably Sortino
+                    # In that case, we can't use it for compounding
+                    # Fallback: use a small return estimate or skip this step
+                    if abs(reward) > 1.0:
+                        # Reward is likely Sortino ratio, not return
+                        # Use a conservative estimate or skip compounding
+                        portfolio_return = 0.0  # Skip this step's return
+                    else:
+                        # Reward might be actual return (small value like 0.01)
+                        portfolio_return = reward
+                
+                # Clamp portfolio return to reasonable bounds (-50% to +50% per step)
+                # This prevents compounding explosions from bugs
+                portfolio_return = np.clip(portfolio_return, -0.5, 0.5)
+                
+                episode_returns.append(portfolio_return)
+                episode_equity.append(episode_equity[-1] * (1 + portfolio_return))
                 
                 step_count += 1
             

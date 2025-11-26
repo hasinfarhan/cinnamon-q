@@ -383,9 +383,10 @@ class FastCryptoEnv(gym.Env):
         
         info = {
             'portfolio_value': float(self.portfolio_value),
-            'portfolio_return': float(portfolio_return),
+            'portfolio_return': float(portfolio_return),  # CRITICAL: Actual percentage return for compounding
             'step': int(self.current_step),
-            'sortino_ratio': reward if len(self.returns_history) >= self.lookback_window else None
+            'sortino_ratio': reward if len(self.returns_history) >= self.lookback_window else None,
+            'reward_type': 'sortino_ratio' if len(self.returns_history) >= self.lookback_window else 'portfolio_return'
         }
         
         return observation, reward, terminated, truncated, info

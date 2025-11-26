@@ -28,6 +28,9 @@ import pandas as pd
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root / "src"))
 
+from strategy.benchmarks.buy_and_hold import BuyAndHoldStrategy
+from strategy.benchmarks.mean_reversion import MeanReversionStrategy
+from strategy.benchmarks.trend import TrendFollowingStrategy
 from strategy.ppo_strategy import PPOStrategy
 from strategy.rl.fast_env import FastCryptoEnv
 from strategy.rl.data_loader import prepare_training_data
@@ -368,68 +371,112 @@ def main():
         n_episodes=N_EPISODES
     )
     
+    # Evaluate Benchmark Strategies (Control Groups)
+    print("\n" + "=" * 80)
+    print("Evaluating Benchmark Strategies (Control Groups)")
+    print("=" * 80)
+    
+    # Buy and Hold
+    buy_hold_metrics = evaluate_benchmark(
+        BuyAndHoldStrategy(data_path=DATA_PATH),
+        DATA_PATH,
+        "Buy and Hold (Passive)",
+        n_episodes=N_EPISODES
+    )
+    
+    # Mean Reversion
+    mean_rev_metrics = evaluate_benchmark(
+        MeanReversionStrategy(data_path=DATA_PATH, buy_threshold=-0.05, sell_threshold=0.05),
+        DATA_PATH,
+        "Mean Reversion (Contrarian)",
+        n_episodes=N_EPISODES
+    )
+    
+    # Trend Following
+    trend_metrics = evaluate_benchmark(
+        TrendFollowingStrategy(data_path=DATA_PATH, window=200),
+        DATA_PATH,
+        "Trend Following (Momentum)",
+        n_episodes=N_EPISODES
+    )
+    
     # ============================================================================
-    # The Verdict
+    # The Tournament - Full Comparison
     # ============================================================================
     print("\n" + "=" * 80)
-    print("🏁 THE VERDICT")
+    print("🏁 THE TOURNAMENT - FULL RESULTS")
     print("=" * 80)
     print()
     
-    print(f"{'Metric':<20} {'MLP (Champion)':<20} {'LSTM (Challenger)':<20} {'Winner':<20}")
+    # Collect all results
+    all_results = {
+        "MLP (AI)": mlp_metrics,
+        "LSTM (AI)": lstm_metrics,
+        "Buy & Hold": buy_hold_metrics,
+        "Mean Reversion": mean_rev_metrics,
+        "Trend Following": trend_metrics
+    }
+    
+    # Sort by Sortino Ratio (primary metric)
+    sorted_results = sorted(
+        all_results.items(),
+        key=lambda x: x[1]["sortino_ratio"],
+        reverse=True
+    )
+    
+    print(f"{'Rank':<6} {'Strategy':<25} {'Sortino':<12} {'Sharpe':<12} {'Return %':<12} {'Max DD %':<12}")
     print("-" * 80)
     
-    # Sortino Ratio (Primary Metric)
-    mlp_sortino = mlp_metrics["sortino_ratio"]
-    lstm_sortino = lstm_metrics["sortino_ratio"]
-    sortino_winner = "LSTM 🏆" if lstm_sortino > mlp_sortino else "MLP 🏆"
-    print(f"{'Sortino Ratio':<20} {mlp_sortino:<20.4f} {lstm_sortino:<20.4f} {sortino_winner:<20}")
-    
-    # Sharpe Ratio
-    mlp_sharpe = mlp_metrics["sharpe_ratio"]
-    lstm_sharpe = lstm_metrics["sharpe_ratio"]
-    sharpe_winner = "LSTM 🏆" if lstm_sharpe > mlp_sharpe else "MLP 🏆"
-    print(f"{'Sharpe Ratio':<20} {mlp_sharpe:<20.4f} {lstm_sharpe:<20.4f} {sharpe_winner:<20}")
-    
-    # Total Return
-    mlp_return = mlp_metrics["total_return"] * 100
-    lstm_return = lstm_metrics["total_return"] * 100
-    return_winner = "LSTM 🏆" if lstm_return > mlp_return else "MLP 🏆"
-    print(f"{'Total Return (%)':<20} {mlp_return:<20.2f} {lstm_return:<20.2f} {return_winner:<20}")
-    
-    # Max Drawdown (lower is better)
-    mlp_dd = mlp_metrics["max_drawdown"]
-    lstm_dd = lstm_metrics["max_drawdown"]
-    dd_winner = "LSTM 🏆" if lstm_dd > mlp_dd else "MLP 🏆"  # Higher (less negative) is better
-    print(f"{'Max Drawdown (%)':<20} {mlp_dd:<20.2f} {lstm_dd:<20.2f} {dd_winner:<20}")
+    for rank, (name, metrics) in enumerate(sorted_results, 1):
+        medal = "🥇" if rank == 1 else "🥈" if rank == 2 else "🥉" if rank == 3 else "  "
+        print(f"{medal} {rank:<4} {name:<25} {metrics['sortino_ratio']:<12.4f} "
+              f"{metrics['sharpe_ratio']:<12.4f} {metrics['total_return']*100:<12.2f} "
+              f"{metrics['max_drawdown']:<12.2f}")
     
     print()
     print("=" * 80)
     
-    # Final Decision
-    if lstm_sortino > mlp_sortino:
-        print("✅ LSTM MODEL WINS! (Higher Sortino Ratio)")
+    # Analysis
+    winner_name, winner_metrics = sorted_results[0]
+    ai_models = [("MLP", mlp_metrics), ("LSTM", lstm_metrics)]
+    benchmarks = [("Buy & Hold", buy_hold_metrics), ("Mean Reversion", mean_rev_metrics), ("Trend Following", trend_metrics)]
+    
+    best_ai = max(ai_models, key=lambda x: x[1]["sortino_ratio"])
+    best_benchmark = max(benchmarks, key=lambda x: x[1]["sortino_ratio"])
+    
+    print("📊 ANALYSIS")
+    print("=" * 80)
+    print()
+    
+    if winner_name in ["MLP (AI)", "LSTM (AI)"]:
+        print(f"✅ AI WINS! {winner_name} has the highest Sortino Ratio")
+        print(f"   AI outperformed all benchmarks - complexity adds value!")
+    elif winner_name in ["Buy & Hold", "Mean Reversion", "Trend Following"]:
+        print(f"⚠️  BENCHMARK WINS! {winner_name} has the highest Sortino Ratio")
+        print(f"   This suggests:")
+        print(f"   - Market regime favors simple strategies")
+        print(f"   - AI may be overfitting or over-trading")
+        print(f"   - Consider: Reduce trading frequency, add regime detection")
+    
+    print()
+    print(f"Best AI Model: {best_ai[0]} (Sortino: {best_ai[1]['sortino_ratio']:.4f})")
+    print(f"Best Benchmark: {best_benchmark[0]} (Sortino: {best_benchmark[1]['sortino_ratio']:.4f})")
+    
+    if best_ai[1]["sortino_ratio"] > best_benchmark[1]["sortino_ratio"]:
         print()
-        print("🚀 Deployment Recommendation:")
-        print("  1. Backup current MLP model to models/archive/")
-        print("  2. Copy LSTM model to models/hdrl_optimized/")
-        print("  3. Update config.yaml to use LSTM model")
-        print("  4. Restart bot: python main.py")
-        print()
-        print("  Example commands:")
-        print(f"    mkdir -p models/archive")
-        print(f"    cp {MLP_MODEL_PATH} models/archive/mlp_model_{pd.Timestamp.now().strftime('%Y%m%d')}.zip")
-        print(f"    cp {LSTM_MODEL_PATH} {MLP_MODEL_PATH}")
-        print(f"    cp {LSTM_VECNORM_PATH} {MLP_VECNORM_PATH}")
+        print("✅ AI beats benchmarks - The brain is working!")
+        if best_ai[0] == "LSTM":
+            print()
+            print("🚀 Deployment Recommendation: Deploy LSTM Model")
+            print("  1. Backup current MLP model to models/archive/")
+            print("  2. Copy LSTM model to models/hdrl_optimized/")
+            print("  3. Restart bot: python main.py")
     else:
-        print("✅ MLP MODEL WINS! (Higher Sortino Ratio)")
         print()
-        print("💡 Recommendation:")
-        print("  - Keep MLP model in production")
-        print("  - Consider retraining LSTM with:")
-        print("    * More timesteps")
-        print("    * Different LSTM hyperparameters")
-        print("    * Longer sequence length")
+        print("⚠️  Benchmarks beat AI - Consider:")
+        print("  - Retraining with more data")
+        print("  - Adjusting reward function")
+        print("  - Adding regime detection (switch strategies based on market conditions)")
     
     print()
     print("=" * 80)

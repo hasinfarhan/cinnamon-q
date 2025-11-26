@@ -114,20 +114,28 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
         macd_min = df.groupby('ticker')['MACD'].transform('min')
         macd_max = df.groupby('ticker')['MACD'].transform('max')
         macd_range = macd_max - macd_min
-        df['MACD_norm'] = np.where(
-            macd_range > 0,
-            (df['MACD'] - macd_min) / macd_range,
-            0.0
+        # Use pandas where() instead of np.where() to keep it as a Series
+        df['MACD_norm'] = pd.Series(
+            np.where(
+                macd_range > 0,
+                (df['MACD'] - macd_min) / macd_range,
+                0.0
+            ),
+            index=df.index
         ).fillna(0.0)
         
         # BB_WIDTH: Normalize per asset (min-max)
         bbw_min = df.groupby('ticker')['BB_WIDTH'].transform('min')
         bbw_max = df.groupby('ticker')['BB_WIDTH'].transform('max')
         bbw_range = bbw_max - bbw_min
-        df['BB_WIDTH_norm'] = np.where(
-            bbw_range > 0,
-            (df['BB_WIDTH'] - bbw_min) / bbw_range,
-            0.0
+        # Use pandas Series to keep it as a Series for fillna()
+        df['BB_WIDTH_norm'] = pd.Series(
+            np.where(
+                bbw_range > 0,
+                (df['BB_WIDTH'] - bbw_min) / bbw_range,
+                0.0
+            ),
+            index=df.index
         ).fillna(0.0)
         
         # ATR_NORM: Already normalized, just ensure valid

@@ -36,8 +36,8 @@ class MeanReversionStrategy:
     def __init__(
         self,
         data_path: Path,
-        buy_threshold: float = -0.05,
-        sell_threshold: float = 0.05,
+        buy_threshold: float = -0.03,  # Reduced from -0.05 to -3% (more sensitive)
+        sell_threshold: float = 0.03,   # Reduced from 0.05 to +3% (more sensitive)
         lookback_hours: int = 24
     ):
         """

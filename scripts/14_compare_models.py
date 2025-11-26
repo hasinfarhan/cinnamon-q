@@ -339,6 +339,163 @@ def evaluate_model(
             shutil.rmtree(temp_dir)
 
 
+def evaluate_benchmark(
+    strategy,
+    data_path: Path,
+    strategy_name: str,
+    n_episodes: int = 5
+) -> Dict[str, float]:
+    """
+    Evaluate a benchmark strategy by running it through the environment.
+    
+    Args:
+        strategy: Benchmark strategy instance (BuyAndHold, MeanReversion, TrendFollowing)
+        data_path: Path to training data
+        strategy_name: Name of the strategy (for logging)
+        n_episodes: Number of episodes to evaluate
+    
+    Returns:
+        Dictionary with performance metrics
+    """
+    print(f"\n{'=' * 80}")
+    print(f"Evaluating {strategy_name}")
+    print(f"{'=' * 80}")
+    
+    # Load data and prepare environment
+    print(f"📊 Loading data and preparing environment...")
+    temp_dir = Path(tempfile.mkdtemp(prefix="eval_benchmark_"))
+    
+    try:
+        data_config = prepare_training_data(data_path, temp_dir)
+        
+        # Use last 10% of data for evaluation (unseen)
+        env = FastCryptoEnv(data_config=data_config)
+        total_steps = env.n_steps
+        eval_start_step = int(total_steps * (1 - EVAL_DATA_SPLIT))
+        
+        print(f"  Total steps: {total_steps}")
+        print(f"  Evaluation steps: {eval_start_step} to {total_steps}")
+        print(f"  Episodes: {n_episodes}")
+        
+        # Run evaluation episodes
+        all_returns = []
+        all_equity = []
+        
+        for episode in range(n_episodes):
+            print(f"\n  Episode {episode + 1}/{n_episodes}...")
+            
+            # Reset environment to a random start point in eval range
+            env.current_step = np.random.randint(eval_start_step, total_steps - 100)
+            obs, _ = env.reset()
+            
+            episode_returns = []
+            episode_equity = [100000.0]  # Starting equity
+            
+            done = False
+            step_count = 0
+            max_steps = min(1000, total_steps - env.current_step)  # Limit episode length
+            
+            while not done and step_count < max_steps:
+                # Get target portfolio from benchmark strategy
+                try:
+                    target = strategy.get_target_portfolio(portfolio_value=episode_equity[-1])
+                    
+                    # Convert target portfolio to action vector
+                    action = np.zeros(env.action_space.shape[0])
+                    
+                    # Map target weights to action
+                    # Get asset list from environment
+                    env_assets = env.assets
+                    
+                    for i, asset in enumerate(env_assets):
+                        # Try to match asset (handle /USD differences)
+                        weight = 0.0
+                        for target_asset, target_weight in target.weights.items():
+                            if target_asset == "CASH":
+                                continue
+                            # Match asset (handle /USD suffix)
+                            if (asset == target_asset or 
+                                asset.replace('/USD', '') == target_asset or
+                                asset == target_asset.replace('/USD', '')):
+                                weight = target_weight
+                                break
+                        
+                        action[i] = weight
+                    
+                    # Cash weight
+                    action[-1] = target.weights.get('CASH', 0.0)
+                    
+                    # Normalize action (sum to 1.0)
+                    action = np.clip(action, 0, 1)
+                    action = action / (action.sum() + 1e-8)
+                    
+                except Exception as e:
+                    print(f"    ⚠ Error getting target portfolio: {e}")
+                    # Use random action as fallback
+                    action = env.action_space.sample()
+                
+                # Step environment
+                obs, reward, terminated, truncated, info = env.step(action)
+                done = terminated or truncated
+                
+                # Use portfolio_return from info (not reward, which might be Sortino ratio)
+                portfolio_return = info.get('portfolio_return', reward)
+                portfolio_return = np.clip(portfolio_return, -0.5, 0.5)  # Clamp to prevent explosions
+                
+                episode_returns.append(portfolio_return)
+                episode_equity.append(episode_equity[-1] * (1 + portfolio_return))
+                
+                step_count += 1
+            
+            all_returns.extend(episode_returns)
+            all_equity.extend(episode_equity)
+            
+            episode_return = (episode_equity[-1] / episode_equity[0]) - 1.0
+            print(f"    Episode return: {episode_return * 100:.2f}%")
+        
+        # Calculate metrics
+        returns_array = np.array(all_returns)
+        equity_array = np.array(all_equity)
+        
+        total_return = (equity_array[-1] / equity_array[0]) - 1.0
+        sortino = calculate_sortino_ratio(returns_array)
+        sharpe = calculate_sharpe_ratio(returns_array)
+        max_dd = calculate_max_drawdown(equity_array)
+        
+        metrics = {
+            "sortino_ratio": sortino,
+            "sharpe_ratio": sharpe,
+            "total_return": total_return,
+            "max_drawdown": max_dd,
+            "episodes": n_episodes
+        }
+        
+        print(f"\n  📊 {strategy_name} Results:")
+        print(f"     Sortino Ratio: {sortino:.4f}")
+        print(f"     Sharpe Ratio: {sharpe:.4f}")
+        print(f"     Total Return: {total_return * 100:.2f}%")
+        print(f"     Max Drawdown: {max_dd:.2f}%")
+        
+        return metrics
+        
+    except Exception as e:
+        print(f"  ✗ Error evaluating {strategy_name}: {e}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "sortino_ratio": 0.0,
+            "sharpe_ratio": 0.0,
+            "total_return": 0.0,
+            "max_drawdown": 0.0,
+            "episodes": 0
+        }
+    finally:
+        # Cleanup
+        import shutil
+        if temp_dir.exists():
+            shutil.rmtree(temp_dir)
+
+
 def main():
     """Main comparison execution."""
     print("=" * 80)

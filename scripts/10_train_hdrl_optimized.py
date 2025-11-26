@@ -97,7 +97,19 @@ def main():
     print()
     
     # --- PATHS ---
-    data_path = project_root / "data" / "processed" / "crypto_training_data.parquet"
+    # Phase 5.2: Super Brain - Use TA features (crypto_deep_v2.parquet)
+    # Fallback to v1 if v2 doesn't exist
+    v2_data_path = project_root / "data" / "processed" / "crypto_deep_v2.parquet"
+    v1_data_path = project_root / "data" / "processed" / "crypto_training_data.parquet"
+    
+    if v2_data_path.exists():
+        data_path = v2_data_path
+        print("✓ Using crypto_deep_v2.parquet (with TA features) - Super Brain mode!")
+    else:
+        data_path = v1_data_path
+        print("⚠ Using crypto_training_data.parquet (no TA features)")
+        print("  For best results, run: python scripts/12_enrich_data.py")
+    
     # LSTM models go to separate directory for comparison
     model_dir = project_root / "models" / "hdrl_lstm"
     log_dir = project_root / "logs" / "hdrl_training_lstm"
@@ -128,8 +140,21 @@ def main():
     try:
         data_config = prepare_training_data(data_path, temp_dir)
         data_load_time = time.time() - start_data_load
+        
+        # Validation: Count features per asset
+        has_ta = data_config.get('has_ta_features', False)
+        base_features = 4  # returns, volatility, commit_count_norm, utility_score
+        ta_features = 5 if has_ta else 0  # RSI, MACD, BBW, ATR, SMA_RATIO
+        portfolio_features = 2  # portfolio_value, cash_weight
+        features_per_asset = base_features + ta_features
+        total_features = (data_config['n_assets'] * features_per_asset) + portfolio_features
+        
         print(f"✅ Data loaded and saved in {data_load_time:.2f}s")
         print(f"   Memory-mapped files ready for subprocesses")
+        print(f"   Training with {features_per_asset} features per asset ({base_features} base + {ta_features} TA)")
+        print(f"   Total observation space: {total_features} features")
+        if has_ta:
+            print(f"   🎯 Super Brain mode: LSTM + TA Features = Maximum Intelligence!")
         print()
     except Exception as e:
         print(f"✗ Error loading data: {e}")

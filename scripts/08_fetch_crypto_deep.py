@@ -1,3 +1,4 @@
+import time
 """
 Deep Data Pipeline - Crypto Universe with Fundamentals
 

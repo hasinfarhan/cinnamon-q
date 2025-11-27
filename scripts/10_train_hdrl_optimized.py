@@ -194,7 +194,9 @@ def main():
     
     # Create factory function with memory-mapped data config
     # Subprocesses will load from memory-mapped files (instant, zero-copy)
-    make_env_fn = make_env_factory(data_config)
+    # Phase 5.5: Pass fee_rate to enforce transaction costs (prevents over-trading)
+    fee_rate = 0.001  # 0.1% = 10 bps (standard crypto exchange fee)
+    make_env_fn = make_env_factory(data_config, fee_rate=fee_rate)
     
     # SubprocVecEnv = True parallelism (separate processes)
     # Each subprocess loads from memory-mapped files (zero-copy, instant access)
@@ -293,7 +295,7 @@ def main():
     # Evaluation callback: Track best model
     # CRITICAL: Use the same memory-mapped data config to avoid slow parquet loading
     # Create a separate eval environment (single process for consistency)
-    # Reuse the same make_env_fn factory to ensure fast initialization
+    # Reuse the same make_env_fn factory (with fee_rate) to ensure fast initialization
     def make_eval_env():
         # Use the same memory-mapped data config (instant load, no parquet I/O)
         env = FastCryptoEnv(data_config=data_config)

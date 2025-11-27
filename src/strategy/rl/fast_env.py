@@ -167,14 +167,17 @@ class FastCryptoEnv(gym.Env):
         
         # Pre-allocate numpy arrays for maximum speed
         # Shape: [n_steps, n_assets, n_features]
-        # Features: [returns, volatility, commit_count_norm, utility_score]
-        n_features = 4
+        # Features: [returns, volatility, commit_count_norm, utility_score, corr_btc_norm]
+        # Phase 5.5 Sprint 2: Added correlation feature
+        n_features = 5  # Now 5 base features (was 4)
         
         # Data arrays
         self.returns_array = np.zeros((self.n_steps, n_assets), dtype=np.float32)
         self.volatility_array = np.zeros((self.n_steps, n_assets), dtype=np.float32)
         self.commit_array = np.zeros((self.n_steps, n_assets), dtype=np.float32)
         self.utility_array = np.zeros((self.n_steps, n_assets), dtype=np.float32)
+        # Phase 5.5 Sprint 2: Correlation array (default to neutral 0.5 = corr=0)
+        self.corr_array = np.full((self.n_steps, n_assets), 0.5, dtype=np.float32)
         
         # Price arrays for portfolio return calculation
         self.price_array = np.zeros((self.n_steps, n_assets), dtype=np.float32)
@@ -211,6 +214,8 @@ class FastCryptoEnv(gym.Env):
                     self.volatility_array[ts_idx, asset_idx] = float(row['volatility'])
                     self.commit_array[ts_idx, asset_idx] = float(row['commit_count_norm'])
                     self.utility_array[ts_idx, asset_idx] = float(row['utility_score'])
+                    # Phase 5.5 Sprint 2: Load correlation feature (default to 0.5 if not present)
+                    self.corr_array[ts_idx, asset_idx] = float(row.get('corr_btc_norm', 0.5))
                     self.price_array[ts_idx, asset_idx] = float(row['close'])
     
     def _get_observation(self) -> np.ndarray:

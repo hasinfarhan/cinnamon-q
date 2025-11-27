@@ -263,6 +263,20 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
     np.save(str(utility_path), utility_array)
     np.save(str(price_path), price_array)
     
+    # Save TA arrays if present
+    if has_ta_features:
+        rsi_path = temp_dir / "rsi_array.npy"
+        macd_path = temp_dir / "macd_array.npy"
+        bbw_path = temp_dir / "bbw_array.npy"
+        atr_path = temp_dir / "atr_array.npy"
+        sma_ratio_path = temp_dir / "sma_ratio_array.npy"
+        
+        np.save(str(rsi_path), rsi_array)
+        np.save(str(macd_path), macd_array)
+        np.save(str(bbw_path), bbw_array)
+        np.save(str(atr_path), atr_array)
+        np.save(str(sma_ratio_path), sma_ratio_array)
+    
     # Calculate total memory usage
     total_bytes = (
         returns_array.nbytes +
@@ -271,12 +285,21 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
         utility_array.nbytes +
         price_array.nbytes
     )
+    if has_ta_features:
+        total_bytes += (
+            rsi_array.nbytes +
+            macd_array.nbytes +
+            bbw_array.nbytes +
+            atr_array.nbytes +
+            sma_ratio_array.nbytes
+        )
     total_mb = total_bytes / (1024 * 1024)
     
     print(f"✅ Data optimized and saved. Shape: [{n_steps}, {n_assets}]. Size: {total_mb:.2f} MB")
     print(f"   Files saved to: {temp_dir}")
     
-    return {
+    # Build return dictionary with all paths and metadata
+    config = {
         'returns_path': str(returns_path),
         'volatility_path': str(volatility_path),
         'commit_path': str(commit_path),
@@ -285,6 +308,17 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
         'asset_list': asset_list,
         'timestamps': timestamps,
         'n_steps': n_steps,
-        'n_assets': n_assets
+        'n_assets': n_assets,
+        'has_ta_features': has_ta_features  # CRITICAL: Include this flag!
     }
+    
+    # Add TA paths if present
+    if has_ta_features:
+        config['rsi_path'] = str(rsi_path)
+        config['macd_path'] = str(macd_path)
+        config['bbw_path'] = str(bbw_path)
+        config['atr_path'] = str(atr_path)
+        config['sma_ratio_path'] = str(sma_ratio_path)
+    
+    return config
 

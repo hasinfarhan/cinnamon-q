@@ -103,13 +103,14 @@ def initialize_apis():
     return alpaca_headers, alpaca_data_url, coingecko_api
 
 
-def fetch_fundamentals(coin_id: str, coingecko_api: CoinGeckoAPI) -> Dict[str, Optional[float]]:
+def fetch_fundamentals(coin_id: str, coingecko_api: CoinGeckoAPI, max_retries: int = 3) -> Dict[str, Optional[float]]:
     """
-    Fetch fundamental data from CoinGecko for a given coin.
+    Fetch fundamental data from CoinGecko for a given coin with retry logic.
     
     Args:
         coin_id: CoinGecko coin ID (e.g., "bitcoin", "ethereum")
         coingecko_api: CoinGecko API client instance
+        max_retries: Maximum number of retry attempts (default: 3)
     
     Returns:
         dict: Dictionary containing:
@@ -117,39 +118,48 @@ def fetch_fundamentals(coin_id: str, coingecko_api: CoinGeckoAPI) -> Dict[str, O
             - twitter_followers: Community size (Twitter followers)
             - None values if data unavailable
     """
-    try:
-        # Get coin data with developer and community stats
-        coin_data = coingecko_api.get_coin_by_id(
-            id=coin_id,
-            localization=False,
-            tickers=False,
-            market_data=False,
-            community_data=True,
-            developer_data=True,
-            sparkline=False
-        )
-        
-        # Extract developer data
-        commit_count = None
-        if coin_data.get("developer_data") and coin_data["developer_data"].get("commit_count_4_weeks"):
-            commit_count = float(coin_data["developer_data"]["commit_count_4_weeks"])
-        
-        # Extract community data
-        twitter_followers = None
-        if coin_data.get("community_data") and coin_data["community_data"].get("twitter_followers"):
-            twitter_followers = float(coin_data["community_data"]["twitter_followers"])
-        
-        return {
-            "commit_count_4_weeks": commit_count,
-            "twitter_followers": twitter_followers
-        }
-        
-    except Exception as e:
-        print(f"  ⚠ Warning: Failed to fetch fundamentals for {coin_id}: {e}")
-        return {
-            "commit_count_4_weeks": None,
-            "twitter_followers": None
-        }
+    import time
+    
+    for attempt in range(max_retries):
+        try:
+            # Get coin data with developer and community stats
+            coin_data = coingecko_api.get_coin_by_id(
+                id=coin_id,
+                localization=False,
+                tickers=False,
+                market_data=False,
+                community_data=True,
+                developer_data=True,
+                sparkline=False
+            )
+            
+            # Extract developer data
+            commit_count = None
+            if coin_data.get("developer_data") and coin_data["developer_data"].get("commit_count_4_weeks"):
+                commit_count = float(coin_data["developer_data"]["commit_count_4_weeks"])
+            
+            # Extract community data
+            twitter_followers = None
+            if coin_data.get("community_data") and coin_data["community_data"].get("twitter_followers"):
+                twitter_followers = float(coin_data["community_data"]["twitter_followers"])
+            
+            return {
+                "commit_count_4_weeks": commit_count,
+                "twitter_followers": twitter_followers
+            }
+            
+        except Exception as e:
+            if attempt < max_retries - 1:
+                # Exponential backoff: wait 2^attempt seconds
+                wait_time = 2 ** attempt
+                print(f"  ⚠ Retry {attempt + 1}/{max_retries} for {coin_id} after {wait_time}s: {e}")
+                time.sleep(wait_time)
+            else:
+                print(f"  ⚠ Warning: Failed to fetch fundamentals for {coin_id} after {max_retries} attempts: {e}")
+                return {
+                    "commit_count_4_weeks": None,
+                    "twitter_followers": None
+                }
 
 
 def fetch_price_history(symbol: str, alpaca_headers: dict, alpaca_data_url: str, years: int = 3, timeframe: str = "15Min") -> pd.DataFrame:
@@ -198,14 +208,36 @@ def fetch_price_history(symbol: str, alpaca_headers: dict, alpaca_data_url: str,
             if page_token:
                 current_params["page_token"] = page_token
             
-            response = requests.get(url, headers=alpaca_headers, params=current_params)
-            
-            # Debug: Print response details if error
-            if response.status_code != 200:
-                print(f"  ⚠ API Response Status: {response.status_code}")
-                print(f"  ⚠ API Response: {response.text[:500]}")
-            
-            response.raise_for_status()
+            # Phase 5.5: Retry logic for rate limits (429) and server errors (5xx)
+            max_retries = 3
+            response = None
+            for attempt in range(max_retries):
+                try:
+                    response = requests.get(url, headers=alpaca_headers, params=current_params, timeout=30)
+                    
+                    # If rate limited (429) or server error (5xx), retry with backoff
+                    if response.status_code == 429 or (500 <= response.status_code < 600):
+                        if attempt < max_retries - 1:
+                            wait_time = 2 ** attempt  # Exponential backoff
+                            print(f"  ⚠ Rate limit/server error ({response.status_code}), retry {attempt + 1}/{max_retries} after {wait_time}s...")
+                            time.sleep(wait_time)
+                            continue
+                    
+                    # For other errors, raise immediately
+                    if response.status_code != 200:
+                        print(f"  ⚠ API Response Status: {response.status_code}")
+                        print(f"  ⚠ API Response: {response.text[:500]}")
+                    
+                    response.raise_for_status()
+                    break  # Success, exit retry loop
+                    
+                except requests.exceptions.RequestException as e:
+                    if attempt < max_retries - 1:
+                        wait_time = 2 ** attempt
+                        print(f"  ⚠ Request error, retry {attempt + 1}/{max_retries} after {wait_time}s: {e}")
+                        time.sleep(wait_time)
+                    else:
+                        raise  # Re-raise on final attempt
             
             data = response.json()
             # Crypto API returns bars in format: {"bars": {"BTC/USD": [...]}}

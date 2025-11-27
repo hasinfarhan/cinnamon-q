@@ -274,6 +274,8 @@ class FastCryptoEnv(gym.Env):
         self.portfolio_value = self.initial_cash
         self.current_weights = np.zeros(self.n_assets + 1, dtype=np.float32)
         self.current_weights[-1] = 1.0
+        # Phase 5.5: Track previous weights for turnover calculation
+        self.prev_weights = self.current_weights.copy()
         
         observation = self._get_observation()
         info = {
@@ -342,22 +344,33 @@ class FastCryptoEnv(gym.Env):
             asset_returns = np.zeros(self.n_assets, dtype=np.float32)
             asset_returns[mask] = (next_prices[mask] / current_prices[mask]) - 1.0
             
-            # Portfolio return = dot product of weights and returns
-            portfolio_return = np.dot(weights[:-1], asset_returns)  # Exclude cash weight
+        # Portfolio return = dot product of weights and returns
+        portfolio_return = np.dot(weights[:-1], asset_returns)  # Exclude cash weight
         else:
             portfolio_return = 0.0
         
-        # Update portfolio value
-        self.portfolio_value *= (1.0 + portfolio_return)
+        # Phase 5.5: Calculate transaction costs (Real World Environment)
+        # Turnover = sum of absolute weight changes (measures trading activity)
+        turnover = np.sum(np.abs(weights - self.prev_weights))
+        transaction_cost = turnover * self.fee_rate
         
-        # Track returns history
-        self.returns_history.append(portfolio_return)
+        # Net portfolio return after fees
+        net_portfolio_return = portfolio_return - transaction_cost
         
-        # Calculate reward
+        # Update portfolio value (using net return after fees)
+        self.portfolio_value *= (1.0 + net_portfolio_return)
+        
+        # Track returns history (use net return for reward calculation)
+        self.returns_history.append(net_portfolio_return)
+        
+        # Store current weights for next step's turnover calculation
+        self.prev_weights = weights.copy()
+        
+        # Calculate reward (using net return after fees)
         if len(self.returns_history) < self.lookback_window:
-            reward = float(portfolio_return)
+            reward = float(net_portfolio_return)
         else:
-            # Calculate Sortino Ratio
+            # Calculate Sortino Ratio (on net returns after fees)
             returns_array = np.array(list(self.returns_history), dtype=np.float32)
             mean_return = np.mean(returns_array)
             
@@ -383,7 +396,10 @@ class FastCryptoEnv(gym.Env):
         
         info = {
             'portfolio_value': float(self.portfolio_value),
-            'portfolio_return': float(portfolio_return),  # CRITICAL: Actual percentage return for compounding
+            'portfolio_return': float(net_portfolio_return),  # Net return after fees
+            'gross_return': float(portfolio_return),  # Gross return before fees
+            'transaction_cost': float(transaction_cost),  # Fees paid this step
+            'turnover': float(turnover),  # Trading activity (sum of abs weight changes)
             'step': int(self.current_step),
             'sortino_ratio': reward if len(self.returns_history) >= self.lookback_window else None,
             'reward_type': 'sortino_ratio' if len(self.returns_history) >= self.lookback_window else 'portfolio_return'

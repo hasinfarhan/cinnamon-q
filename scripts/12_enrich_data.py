@@ -77,6 +77,12 @@ def main():
     df_enriched = ta.add_all_features(df)
     print()
     
+    # Step 3.5: Add correlation features (Phase 5.5 Sprint 2: The Correlation Eye)
+    print("Step 3.5: Adding correlation features (rolling correlation to BTC)...")
+    print("  This helps the AI identify hedging assets (like PAXG) that decouple from BTC.")
+    df_enriched = ta.add_correlation(df_enriched, benchmark_ticker='BTC', window=96)
+    print()
+    
     # Step 4: Verify new columns
     print("Step 4: Verifying enriched data...")
     original_cols = set(df.columns)

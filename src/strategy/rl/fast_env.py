@@ -65,10 +65,13 @@ class FastCryptoEnv(gym.Env):
             self.commit_array = np.load(data_config['commit_path'], mmap_mode='r')
             self.utility_array = np.load(data_config['utility_path'], mmap_mode='r')
             self.price_array = np.load(data_config['price_path'], mmap_mode='r')
+            # Phase 5.5 Sprint 2: Load correlation array
+            self.corr_array = np.load(data_config['corr_path'], mmap_mode='r')
             self.asset_list = data_config['asset_list']
             self.timestamps = data_config['timestamps']
             self.n_steps = data_config['n_steps']
             self.has_ta_features = data_config.get('has_ta_features', False)
+            self.has_correlation = data_config.get('has_correlation', False)
             
             # Load TA arrays if present
             if self.has_ta_features:
@@ -109,11 +112,12 @@ class FastCryptoEnv(gym.Env):
         )
         
         # Define observation space DYNAMICALLY
-        # Base features per asset: [return, volatility, commit_count_norm, utility_score] = 4
+        # Base features per asset: [return, volatility, commit_count_norm, utility_score, corr_btc_norm] = 5
+        # Phase 5.5 Sprint 2: Added corr_btc_norm (rolling correlation to BTC)
         # TA features per asset (if present): [RSI, MACD, BBW, ATR, SMA_RATIO] = 5
         # Plus: portfolio_value_norm, cash_weight = 2
         
-        base_features_per_asset = 4
+        base_features_per_asset = 5  # Phase 5.5: Now includes correlation (was 4)
         ta_features_per_asset = 5 if (hasattr(self, 'has_ta_features') and self.has_ta_features) else 0
         n_features_per_asset = base_features_per_asset + ta_features_per_asset
         n_obs_features = (self.n_assets * n_features_per_asset) + 2
@@ -127,10 +131,11 @@ class FastCryptoEnv(gym.Env):
             dtype=np.float32
         )
         
+        corr_info = " (includes corr_btc)" if (hasattr(self, 'has_correlation') and self.has_correlation) else ""
         if ta_features_per_asset > 0:
-            print(f"  ✓ Observation space: {n_obs_features} features ({base_features_per_asset} base + {ta_features_per_asset} TA per asset)")
+            print(f"  ✓ Observation space: {n_obs_features} features ({base_features_per_asset} base{corr_info} + {ta_features_per_asset} TA per asset)")
         else:
-            print(f"  ✓ Observation space: {n_obs_features} features ({base_features_per_asset} base per asset, no TA)")
+            print(f"  ✓ Observation space: {n_obs_features} features ({base_features_per_asset} base{corr_info} per asset, no TA)")
         
         # Initialize episode state
         self.current_step = 0
@@ -233,7 +238,9 @@ class FastCryptoEnv(gym.Env):
             obs[idx + 1] = self.volatility_array[self.current_step, asset_idx]
             obs[idx + 2] = self.commit_array[self.current_step, asset_idx]
             obs[idx + 3] = self.utility_array[self.current_step, asset_idx]
-            idx += 4
+            # Phase 5.5 Sprint 2: Correlation feature (rolling correlation to BTC)
+            obs[idx + 4] = self.corr_array[self.current_step, asset_idx] if hasattr(self, 'corr_array') else 0.5
+            idx += 5  # Now 5 base features (was 4)
             
             # TA features (if present)
             if has_ta:

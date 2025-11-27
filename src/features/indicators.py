@@ -326,6 +326,138 @@ class TechnicalAnalysis:
             'SMA_200_RATIO'
         ]
     
+    def add_correlation(
+        self,
+        df: pd.DataFrame,
+        benchmark_ticker: str = 'BTC',
+        window: int = 96
+    ) -> pd.DataFrame:
+        """
+        Add rolling correlation feature (correlation to benchmark asset).
+        
+        Phase 5.5 Sprint 2: The Correlation Eye
+        This feature helps the AI identify hedging assets (like PAXG) that
+        decouple from the broad market (BTC).
+        
+        Logic:
+        - High Correlation (+0.9): High Beta. Good for Bull Runs.
+        - Low/Negative Correlation (< 0.0): Hedge. Good for Bear Markets.
+        
+        The Brain's Lesson: "When Volatility is High AND Market Trend is Down
+        -> Shift weight to assets with Low Correlation (PAXG)."
+        
+        Args:
+            df: DataFrame in "Long" format with columns: 'timestamp', 'ticker', 'close'
+            benchmark_ticker: Ticker to use as benchmark (default: 'BTC' for Bitcoin)
+            window: Rolling window for correlation calculation (default: 96 periods)
+                   For 15-minute bars, 96 = 24 hours (1 day)
+        
+        Returns:
+            DataFrame with added 'corr_btc' column (rolling correlation to benchmark)
+        """
+        # Make a copy to avoid modifying the original
+        df_enriched = df.copy()
+        
+        # Ensure timestamp is datetime
+        if not pd.api.types.is_datetime64_any_dtype(df_enriched['timestamp']):
+            df_enriched['timestamp'] = pd.to_datetime(df_enriched['timestamp'])
+        
+        # Ensure data is sorted by timestamp and ticker
+        df_enriched = df_enriched.sort_values(['timestamp', 'ticker']).reset_index(drop=True)
+        
+        print(f"  Calculating rolling correlation to {benchmark_ticker} (window={window})...")
+        
+        # Pivot to Wide format: timestamp x ticker (close prices)
+        # This allows us to calculate correlations across assets
+        pivoted = df_enriched.pivot(index='timestamp', columns='ticker', values='close')
+        
+        # Calculate percentage returns (needed for correlation)
+        returns = pivoted.pct_change().dropna()
+        
+        # Check if benchmark exists
+        if benchmark_ticker not in returns.columns:
+            # Try alternative formats (BTC/USD -> BTC, etc.)
+            benchmark_variants = [
+                benchmark_ticker,
+                benchmark_ticker.replace('/USD', ''),
+                f"{benchmark_ticker}/USD",
+                'BTC',
+                'BTC/USD'
+            ]
+            benchmark_returns = None
+            for variant in benchmark_variants:
+                if variant in returns.columns:
+                    benchmark_returns = returns[variant]
+                    benchmark_ticker = variant  # Use the found variant
+                    break
+            
+            if benchmark_returns is None:
+                print(f"  ⚠ Warning: Benchmark ticker '{benchmark_ticker}' not found in data.")
+                print(f"  Available tickers: {list(returns.columns)[:10]}...")
+                print(f"  Setting correlation to 1.0 (assume correlated)")
+                df_enriched['corr_btc'] = 1.0
+                return df_enriched
+        else:
+            benchmark_returns = returns[benchmark_ticker]
+        
+        # Calculate rolling correlation for each asset against benchmark
+        # Shape: (n_timestamps, n_assets)
+        rolling_corr = returns.rolling(window=window).corr(benchmark_returns)
+        
+        # Handle the case where rolling_corr might be a DataFrame with MultiIndex
+        # If rolling_corr is a Series (single asset), convert to DataFrame
+        if isinstance(rolling_corr, pd.Series):
+            # This shouldn't happen, but handle it
+            rolling_corr = rolling_corr.to_frame(name=benchmark_ticker)
+        
+        # Extract correlation values for each asset
+        # rolling_corr might have MultiIndex (timestamp, ticker) or be a DataFrame
+        # We need to extract the correlation values for each asset
+        corr_dict = {}
+        
+        for ticker in returns.columns:
+            if ticker == benchmark_ticker:
+                # Benchmark is always perfectly correlated with itself
+                corr_dict[ticker] = pd.Series(1.0, index=returns.index)
+            else:
+                # Calculate rolling correlation for this asset
+                asset_returns = returns[ticker]
+                corr_series = asset_returns.rolling(window=window).corr(benchmark_returns)
+                corr_dict[ticker] = corr_series
+        
+        # Convert to DataFrame and melt back to Long format
+        corr_df = pd.DataFrame(corr_dict, index=returns.index)
+        corr_df.index.name = 'timestamp'
+        corr_df = corr_df.reset_index()
+        
+        # Melt to Long format: timestamp, ticker, corr_btc
+        corr_long = corr_df.melt(
+            id_vars=['timestamp'],
+            var_name='ticker',
+            value_name='corr_btc'
+        )
+        
+        # Merge back into original DataFrame
+        df_enriched = df_enriched.merge(
+            corr_long,
+            on=['timestamp', 'ticker'],
+            how='left'
+        )
+        
+        # Fill NaNs: Use 1.0 as conservative default (assume correlated if unknown)
+        # This is safe because:
+        # - Early history (before window periods): Assume correlated
+        # - Missing data: Assume correlated (conservative)
+        df_enriched['corr_btc'] = df_enriched['corr_btc'].fillna(1.0)
+        
+        # Clip to valid correlation range [-1, 1] (safety check)
+        df_enriched['corr_btc'] = df_enriched['corr_btc'].clip(-1.0, 1.0)
+        
+        print(f"  ✓ Added corr_btc column (correlation to {benchmark_ticker})")
+        print(f"    Correlation range: [{df_enriched['corr_btc'].min():.3f}, {df_enriched['corr_btc'].max():.3f}]")
+        
+        return df_enriched
+    
     @staticmethod
     def get_training_feature_columns() -> list:
         """

@@ -62,11 +62,19 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
     ta_columns = ['RSI_14', 'MACD', 'BB_WIDTH', 'ATR_NORM', 'SMA_200_RATIO']
     has_ta_features = all(col in df.columns for col in ta_columns)
     
+    # Phase 5.5 Sprint 2: Check if correlation feature is present
+    has_correlation = 'corr_btc' in df.columns
+    
     if has_ta_features:
         print("  ✓ Technical Analysis features detected (RSI, MACD, BBW, ATR, SMA Ratio)")
     else:
         print("  ⚠ Technical Analysis features not found. Calculating basic features only.")
         print("     For best results, use crypto_deep_v2.parquet (run scripts/12_enrich_data.py)")
+    
+    if has_correlation:
+        print("  ✓ Correlation feature detected (corr_btc - rolling correlation to BTC)")
+    else:
+        print("  ⚠ Correlation feature not found. Run scripts/12_enrich_data.py to add it.")
     
     # Get unique assets and timestamps
     asset_list = sorted(df['ticker'].unique().tolist())
@@ -102,6 +110,16 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
     
     # Ensure utility_score is valid (vectorized)
     df['utility_score'] = df['utility_score'].fillna(0.5).clip(0.0, 1.0)
+    
+    # Phase 5.5 Sprint 2: Normalize correlation feature if present
+    # Correlation is already in [-1, 1] range, but we can normalize to [0, 1] for consistency
+    # Formula: (corr + 1) / 2 maps [-1, 1] -> [0, 1]
+    if has_correlation:
+        df['corr_btc_norm'] = ((df['corr_btc'] + 1.0) / 2.0).fillna(0.5).clip(0.0, 1.0)
+        # 0.5 = neutral (correlation = 0), 1.0 = perfect positive, 0.0 = perfect negative
+    else:
+        # Default to 0.5 (neutral correlation) if not available
+        df['corr_btc_norm'] = 0.5
     
     # Normalize TA features if present (per asset, vectorized)
     if has_ta_features:
@@ -160,6 +178,10 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
         utility_pivot = df.pivot(index='timestamp', columns='ticker', values='utility_score')
         price_pivot = df.pivot(index='timestamp', columns='ticker', values='close')
         
+        # Phase 5.5 Sprint 2: Pivot correlation feature if present
+        if has_correlation:
+            corr_pivot = df.pivot(index='timestamp', columns='ticker', values='corr_btc_norm')
+        
         # Pivot TA features if present
         if has_ta_features:
             rsi_pivot = df.pivot(index='timestamp', columns='ticker', values='RSI_14_norm')
@@ -175,6 +197,10 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
         commit_pivot = df.pivot_table(index='timestamp', columns='ticker', values='commit_count_norm', aggfunc='first')
         utility_pivot = df.pivot_table(index='timestamp', columns='ticker', values='utility_score', aggfunc='first')
         price_pivot = df.pivot_table(index='timestamp', columns='ticker', values='close', aggfunc='first')
+        
+        # Phase 5.5 Sprint 2: Pivot correlation feature if present
+        if has_correlation:
+            corr_pivot = df.pivot_table(index='timestamp', columns='ticker', values='corr_btc_norm', aggfunc='first')
         
         if has_ta_features:
             rsi_pivot = df.pivot_table(index='timestamp', columns='ticker', values='RSI_14_norm', aggfunc='first')
@@ -205,6 +231,11 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
     price_pivot = price_pivot.reindex(index=common_index, columns=common_columns)
     price_pivot = price_pivot.ffill().fillna(0.0)
     
+    # Phase 5.5 Sprint 2: Reindex correlation feature if present
+    if has_correlation:
+        corr_pivot = corr_pivot.reindex(index=common_index, columns=common_columns)
+        corr_pivot = corr_pivot.ffill().fillna(0.5)  # Neutral correlation = 0.5 (maps to corr=0)
+    
     # Reindex TA features if present
     if has_ta_features:
         rsi_pivot = rsi_pivot.reindex(index=common_index, columns=common_columns)
@@ -228,6 +259,13 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
     commit_array = commit_pivot.values.astype(np.float32)
     utility_array = utility_pivot.values.astype(np.float32)
     price_array = price_pivot.values.astype(np.float32)
+    
+    # Phase 5.5 Sprint 2: Convert correlation array if present
+    if has_correlation:
+        corr_array = corr_pivot.values.astype(np.float32)
+    else:
+        # Create neutral array (0.5 = correlation 0) if not available
+        corr_array = np.full((n_steps, n_assets), 0.5, dtype=np.float32)
     
     # Convert TA arrays if present
     if has_ta_features:
@@ -263,6 +301,10 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
     np.save(str(utility_path), utility_array)
     np.save(str(price_path), price_array)
     
+    # Phase 5.5 Sprint 2: Save correlation array
+    corr_path = temp_dir / "corr_array.npy"
+    np.save(str(corr_path), corr_array)
+    
     # Save TA arrays if present
     if has_ta_features:
         rsi_path = temp_dir / "rsi_array.npy"
@@ -283,7 +325,8 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
         volatility_array.nbytes +
         commit_array.nbytes +
         utility_array.nbytes +
-        price_array.nbytes
+        price_array.nbytes +
+        corr_array.nbytes  # Phase 5.5 Sprint 2: Correlation feature
     )
     if has_ta_features:
         total_bytes += (
@@ -305,11 +348,13 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
         'commit_path': str(commit_path),
         'utility_path': str(utility_path),
         'price_path': str(price_path),
+        'corr_path': str(corr_path),  # Phase 5.5 Sprint 2: Correlation feature
         'asset_list': asset_list,
         'timestamps': timestamps,
         'n_steps': n_steps,
         'n_assets': n_assets,
-        'has_ta_features': has_ta_features  # CRITICAL: Include this flag!
+        'has_ta_features': has_ta_features,  # CRITICAL: Include this flag!
+        'has_correlation': has_correlation  # Phase 5.5 Sprint 2: Correlation flag
     }
     
     # Add TA paths if present

@@ -153,7 +153,9 @@ def main():
         
         # Validation: Count features per asset
         has_ta = data_config.get('has_ta_features', False)
-        base_features = 4  # returns, volatility, commit_count_norm, utility_score
+        has_corr = data_config.get('has_correlation', False)
+        base_features = 5  # Phase 5.5 Sprint 2: Now includes corr_btc_norm (was 4)
+        # Base: returns, volatility, commit_count_norm, utility_score, corr_btc_norm
         ta_features = 5 if has_ta else 0  # RSI, MACD, BBW, ATR, SMA_RATIO
         portfolio_features = 2  # portfolio_value, cash_weight
         features_per_asset = base_features + ta_features
@@ -161,10 +163,13 @@ def main():
         
         print(f"✅ Data loaded and saved in {data_load_time:.2f}s")
         print(f"   Memory-mapped files ready for subprocesses")
-        print(f"   Training with {features_per_asset} features per asset ({base_features} base + {ta_features} TA)")
+        corr_info = " (includes corr_btc)" if has_corr else ""
+        print(f"   Training with {features_per_asset} features per asset ({base_features} base{corr_info} + {ta_features} TA)")
         print(f"   Total observation space: {total_features} features")
         if has_ta:
             print(f"   🎯 Super Brain mode: LSTM + TA Features = Maximum Intelligence!")
+        if has_corr:
+            print(f"   🛡️ Fortress Brain mode: Correlation Eye enabled (can identify hedges like PAXG)!")
         print()
     except Exception as e:
         print(f"✗ Error loading data: {e}")

@@ -50,7 +50,7 @@ def _check_tensorboard():
         return False
 
 
-def make_env_factory(data_config: dict):
+def make_env_factory(data_config: dict, fee_rate: float = 0.001):
     """
     Factory function for creating environments with memory-mapped data.
     
@@ -61,6 +61,8 @@ def make_env_factory(data_config: dict):
     Args:
         data_config: Data configuration dictionary from prepare_training_data()
                     Contains paths to .npy files and metadata
+        fee_rate: Transaction fee rate (default: 0.001 = 0.1% = 10 bps)
+                 Phase 5.5: Real World Environment - Fees prevent over-trading
     
     Returns:
         Factory function that creates FastCryptoEnv instances

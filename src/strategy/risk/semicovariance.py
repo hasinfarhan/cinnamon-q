@@ -126,6 +126,17 @@ class SemicovarianceCalculator:
                 columns=returns.columns
             )
         
+        # Add regularization to prevent numerical issues (non-convex optimization errors)
+        # Add a small identity matrix to ensure positive definiteness
+        # This prevents "The problem seems to be non-convex" errors in the optimizer
+        regularization = 1e-6  # Small regularization factor
+        identity = pd.DataFrame(
+            np.eye(len(semicov_matrix)),
+            index=semicov_matrix.index,
+            columns=semicov_matrix.columns
+        )
+        semicov_matrix = semicov_matrix + (regularization * identity)
+        
         return semicov_matrix
     
     def _calculate_semicovariance_manual(self, returns: pd.DataFrame) -> pd.DataFrame:

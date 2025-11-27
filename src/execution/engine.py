@@ -20,7 +20,8 @@ except ImportError:
     DatabaseService = None  # type: ignore
 
 # Minimum trade threshold to avoid "dust" trades
-MIN_TRADE_THRESHOLD = 1.0  # dollars
+# Alpaca requires minimum $10 notional for crypto orders
+MIN_TRADE_THRESHOLD = 10.0  # dollars (Alpaca minimum)
 
 
 class TradingEngine:
@@ -295,8 +296,32 @@ class TradingEngine:
                 continue
         
         # Execute all buys after sells complete
-        print(f"Executing {len(buys)} buy order(s)...")
+        # First, check available cash and filter out orders that exceed balance
+        state_after_sells = self.get_portfolio_state()  # Refresh state after sells
+        available_cash = state_after_sells.cash
+        
+        # Filter buys: Remove orders below minimum threshold or exceeding available cash
+        valid_buys: List[TradeOrder] = []
+        total_buy_notional = 0.0
+        
         for buy_order in buys:
+            notional = buy_order.notional or 0.0
+            
+            # Skip if below minimum threshold
+            if notional < MIN_TRADE_THRESHOLD:
+                print(f"  ⚠ Skipping {buy_order.symbol}: ${notional:.2f} below ${MIN_TRADE_THRESHOLD} minimum")
+                continue
+            
+            # Check if we have enough cash (with 5% buffer for fees/slippage)
+            if total_buy_notional + notional > available_cash * 0.95:
+                print(f"  ⚠ Skipping {buy_order.symbol}: Would exceed available cash (${available_cash:.2f})")
+                continue
+            
+            valid_buys.append(buy_order)
+            total_buy_notional += notional
+        
+        print(f"Executing {len(valid_buys)} buy order(s) (filtered from {len(buys)} total, ${total_buy_notional:.2f} total notional)...")
+        for buy_order in valid_buys:
             try:
                 result = self.provider.execute_order(buy_order)
                 executed_orders.append(result)
@@ -341,8 +366,15 @@ class TradingEngine:
             side = order.side.value  # "buy" or "sell"
             
             # Get quantity: prefer filled_qty if available, otherwise use requested qty
-            # For MVP, we log the order submission, so use requested qty
+            # Note: For pending orders, filled_qty will be 0, so we use qty from order response
             qty = result.get("filled_qty") or result.get("qty") or order.qty or 0.0
+            # If order is pending, use the requested qty from the order itself
+            if qty == 0.0 and order.qty is not None:
+                qty = order.qty
+            elif qty == 0.0 and order.notional is not None:
+                # Estimate qty from notional (will be updated when order fills)
+                # For logging purposes, we'll use 0.0 and note it's pending
+                qty = 0.0
             if qty is None:
                 qty = 0.0
             # Ensure qty is a number (convert string to float if needed)

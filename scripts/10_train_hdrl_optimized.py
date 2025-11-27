@@ -67,7 +67,8 @@ def make_env_factory(data_config: dict):
     """
     def _init():
         # Create environment with memory-mapped data (instant load, zero-copy)
-        env = FastCryptoEnv(data_config=data_config)
+        # Phase 5.5: Include transaction fees to make agent cost-conscious
+        env = FastCryptoEnv(data_config=data_config, fee_rate=fee_rate)
         return env
     return _init
 

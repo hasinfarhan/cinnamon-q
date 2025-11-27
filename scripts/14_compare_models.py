@@ -185,7 +185,7 @@ def evaluate_model(
         data_config = prepare_training_data(data_path, temp_dir)
         
         # Use last 10% of data for evaluation (unseen)
-        env = FastCryptoEnv(data_config=data_config)
+        env = FastCryptoEnv(data_config=data_config, fee_rate=0.001)  # Phase 5.5: Transaction fees
         total_steps = env.n_steps
         eval_start_step = int(total_steps * (1 - EVAL_DATA_SPLIT))
         
@@ -369,7 +369,7 @@ def evaluate_benchmark(
         data_config = prepare_training_data(data_path, temp_dir)
         
         # Use last 10% of data for evaluation (unseen)
-        env = FastCryptoEnv(data_config=data_config)
+        env = FastCryptoEnv(data_config=data_config, fee_rate=0.001)  # Phase 5.5: Transaction fees
         total_steps = env.n_steps
         eval_start_step = int(total_steps * (1 - EVAL_DATA_SPLIT))
         
@@ -541,11 +541,11 @@ def main():
         n_episodes=N_EPISODES
     )
     
-    # Mean Reversion
+    # Mean Reversion (Bollinger Bands)
     mean_rev_metrics = evaluate_benchmark(
-        MeanReversionStrategy(data_path=DATA_PATH, buy_threshold=-0.05, sell_threshold=0.05),
+        MeanReversionStrategy(data_path=DATA_PATH, window=20, num_std_dev=2.0),  # Updated to Bollinger Bands
         DATA_PATH,
-        "Mean Reversion (Contrarian)",
+        "Mean Reversion (Bollinger Bands)",
         n_episodes=N_EPISODES
     )
     

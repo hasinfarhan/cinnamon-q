@@ -344,8 +344,8 @@ class FastCryptoEnv(gym.Env):
             asset_returns = np.zeros(self.n_assets, dtype=np.float32)
             asset_returns[mask] = (next_prices[mask] / current_prices[mask]) - 1.0
             
-        # Portfolio return = dot product of weights and returns
-        portfolio_return = np.dot(weights[:-1], asset_returns)  # Exclude cash weight
+            # Portfolio return = dot product of weights and returns
+            portfolio_return = np.dot(weights[:-1], asset_returns)  # Exclude cash weight
         else:
             portfolio_return = 0.0
         

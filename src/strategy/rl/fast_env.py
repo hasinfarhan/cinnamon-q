@@ -31,7 +31,8 @@ class FastCryptoEnv(gym.Env):
         data_path: Optional[Path] = None,
         data_config: Optional[Dict] = None,
         lookback_window: int = 30,
-        initial_cash: float = 100000.0
+        initial_cash: float = 100000.0,
+        fee_rate: float = 0.001  # Phase 5.5 Sprint 1: Transaction fees (0.1%)
     ):
         """
         Initialize the fast crypto trading environment.
@@ -55,6 +56,7 @@ class FastCryptoEnv(gym.Env):
         
         self.lookback_window = lookback_window
         self.initial_cash = initial_cash
+        self.fee_rate = fee_rate  # Phase 5.5 Sprint 1: Transaction fees
         
         # Use memory-mapped files if provided, otherwise load from parquet
         if data_config is not None:

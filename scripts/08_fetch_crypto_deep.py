@@ -16,6 +16,7 @@ The output dataset combines all three modalities for RL training.
 
 import os
 import sys
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Optional
@@ -119,8 +120,6 @@ def fetch_fundamentals(coin_id: str, coingecko_api: CoinGeckoAPI, max_retries: i
             - twitter_followers: Community size (Twitter followers)
             - None values if data unavailable
     """
-    import time
-    
     for attempt in range(max_retries):
         try:
             # Get coin data with developer and community stats

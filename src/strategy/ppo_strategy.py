@@ -266,6 +266,14 @@ class PPOStrategy:
         # This maximizes Sortino Ratio (return per unit of downside risk)
         self.solver = SortinoRatioOptimizer(risk_free_rate=risk_free_rate)
         print(f"✓ Sortino Ratio Optimizer initialized (risk-free rate: {risk_free_rate})")
+        
+        # Phase 5.6 Sprint 2: Calmar Risk Gate (Circuit Breaker)
+        # Initialize with default limits (15% max drawdown, 10% unlock threshold)
+        self.risk_gate = CalmarRiskGate(
+            max_drawdown_limit=0.15,  # 15% drawdown triggers lock
+            unlock_threshold=0.10  # 10% drawdown required to unlock
+        )
+        print("✓ Calmar Risk Gate initialized (Circuit Breaker)")
     
     def reset_lstm_state(self):
         """

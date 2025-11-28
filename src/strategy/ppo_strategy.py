@@ -661,9 +661,27 @@ class PPOStrategy:
         try:
             # Solve the optimization problem
             # max_sharpe() with semicovariance matrix = max_sortino()
-            target = self.solver.optimize(expected_returns, downside_risk_matrix)
-            print(f"  ✓ Optimization complete: {len(target.weights)} assets selected (maximizing Sortino Ratio)")
-            return target
+            raw_target = self.solver.optimize(expected_returns, downside_risk_matrix)
+            print(f"  ✓ Optimization complete: {len(raw_target.weights)} assets selected (maximizing Sortino Ratio)")
+            
+            # Phase 5.6 Sprint 2: Apply Calmar Risk Gate (Circuit Breaker)
+            # If drawdown exceeds limit, override to 100% cash
+            if self.trading_engine is not None:
+                try:
+                    current_state = self.trading_engine.get_portfolio_state()
+                    final_target = self.risk_gate.validate(raw_target, current_state)
+                    if final_target != raw_target:
+                        print(f"  🛡️ Calmar Gate: Override to 100% cash (drawdown protection)")
+                except Exception as e:
+                    # If gate validation fails, log warning but return raw target
+                    import logging
+                    logging.warning(f"⚠ Calmar Gate validation failed: {e}. Using raw target.")
+                    final_target = raw_target
+            else:
+                # No trading engine available, skip gate validation
+                final_target = raw_target
+            
+            return final_target
         except Exception as e:
             print(f"  ⚠ Warning: Optimization failed ({e}), using equal weights")
             # Fallback to equal weights if optimization fails

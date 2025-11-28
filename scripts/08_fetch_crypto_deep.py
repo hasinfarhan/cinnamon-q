@@ -24,6 +24,7 @@ from typing import Dict, Optional
 import numpy as np
 import pandas as pd
 import requests
+import yfinance as yf
 from dotenv import load_dotenv
 from pycoingecko import CoinGeckoAPI
 
@@ -288,6 +289,107 @@ def fetch_price_history(symbol: str, alpaca_headers: dict, alpaca_data_url: str,
         import traceback
         traceback.print_exc()
         return pd.DataFrame()
+
+
+def fetch_macro_data(years: int = 3, target_timeframe: str = "15Min") -> pd.DataFrame:
+    """
+    Fetch macroeconomic indicators using yfinance.
+    
+    Phase 7 Sprint 1: The Macro Eye - Global Awareness
+    
+    Fetches:
+    - ^VIX: Volatility Index (Fear Gauge)
+    - DX-Y.NYB: US Dollar Index (DXY) - Crypto inverse correlation
+    - ^TNX: 10-Year Treasury Yield (Cost of Money)
+    
+    Args:
+        years: Number of years of history to fetch (default: 3)
+        target_timeframe: Target timeframe for resampling (default: "15Min" to match crypto data)
+    
+    Returns:
+        pd.DataFrame: DataFrame with columns: timestamp, vix, dxy, tnx
+    """
+    print("📊 Fetching Macroeconomic Indicators...")
+    print("  This gives the bot 'Global Awareness' of market conditions")
+    print()
+    
+    # Macro indicators (daily data, then resampled to match crypto timeframe)
+    macro_symbols = {
+        'vix': '^VIX',      # Volatility Index
+        'dxy': 'DX-Y.NYB',  # US Dollar Index
+        'tnx': '^TNX'       # 10-Year Treasury Yield
+    }
+    
+    macro_data = {}
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=years * 365)
+    
+    for name, symbol in macro_symbols.items():
+        try:
+            print(f"  Fetching {symbol} ({name.upper()})...")
+            ticker = yf.Ticker(symbol)
+            
+            # Fetch daily data (macro indicators don't change every minute)
+            df = ticker.history(start=start_date, end=end_date, interval='1d')
+            
+            if df.empty:
+                print(f"    ⚠ Warning: No data for {symbol}")
+                continue
+            
+            # Extract close price and rename
+            df = df[['Close']].copy()
+            df.columns = [name]
+            df.index.name = 'timestamp'
+            df = df.reset_index()
+            
+            # Ensure timestamp is datetime
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            
+            # Resample to target timeframe (15Min) using forward fill
+            # This matches the crypto data frequency
+            df = df.set_index('timestamp')
+            df_resampled = df.resample(target_timeframe).ffill()
+            
+            # Forward fill any remaining NaNs (for weekends/holidays)
+            df_resampled = df_resampled.fillna(method='ffill')
+            
+            macro_data[name] = df_resampled.reset_index()
+            print(f"    ✓ {symbol}: {len(df_resampled)} periods (resampled to {target_timeframe})")
+            
+        except Exception as e:
+            print(f"    ✗ Error fetching {symbol}: {e}")
+            # Create empty DataFrame with timestamp column
+            macro_data[name] = pd.DataFrame(columns=['timestamp', name])
+    
+    # Merge all macro indicators on timestamp
+    if not macro_data:
+        print("  ⚠ Warning: No macro data fetched, returning empty DataFrame")
+        return pd.DataFrame(columns=['timestamp', 'vix', 'dxy', 'tnx'])
+    
+    # Start with the first non-empty dataframe
+    merged = None
+    for name, df in macro_data.items():
+        if not df.empty:
+            if merged is None:
+                merged = df[['timestamp', name]].copy()
+            else:
+                merged = merged.merge(df[['timestamp', name]], on='timestamp', how='outer')
+    
+    if merged is None:
+        print("  ⚠ Warning: No macro data to merge")
+        return pd.DataFrame(columns=['timestamp', 'vix', 'dxy', 'tnx'])
+    
+    # Sort by timestamp
+    merged = merged.sort_values('timestamp').reset_index(drop=True)
+    
+    # Forward fill any remaining NaNs
+    merged = merged.fillna(method='ffill').fillna(method='bfill')
+    
+    print(f"  ✓ Macro data merged: {len(merged)} timestamps")
+    print(f"    Columns: {list(merged.columns)}")
+    print()
+    
+    return merged
 
 
 def apply_synthetic_history(

@@ -58,6 +58,13 @@ class FastCryptoEnv(gym.Env):
         self.initial_cash = initial_cash
         self.fee_rate = fee_rate  # Phase 5.5 Sprint 1: Transaction fees
         
+        # Phase 5.6 Sprint 1: Fortress Brain - Composite Reward Coefficients
+        self.sortino_coeff = 0.5  # Penalty for downside volatility
+        self.calmar_coeff = 2.0  # Penalty for drawdown (quadratic)
+        
+        # Phase 5.6 Sprint 1: Track peak equity (high water mark) for Calmar calculation
+        self.peak_equity = 0.0
+        
         # Use memory-mapped files if provided, otherwise load from parquet
         if data_config is not None:
             # Lightweight initialization: load from memory-mapped files (zero-copy)
@@ -149,6 +156,9 @@ class FastCryptoEnv(gym.Env):
         self.portfolio_value = initial_cash
         self.current_weights = np.zeros(self.n_assets + 1, dtype=np.float32)
         self.current_weights[-1] = 1.0  # Start with 100% cash
+        
+        # Phase 5.6 Sprint 1: Initialize peak equity to initial capital
+        self.peak_equity = float(initial_cash)
     
     def _load_and_optimize(self):
         """

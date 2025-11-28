@@ -351,7 +351,7 @@ def fetch_macro_data(years: int = 3, target_timeframe: str = "15Min") -> pd.Data
             df_resampled = df.resample(target_timeframe).ffill()
             
             # Forward fill any remaining NaNs (for weekends/holidays)
-            df_resampled = df_resampled.fillna(method='ffill')
+            df_resampled = df_resampled.ffill().bfill()
             
             macro_data[name] = df_resampled.reset_index()
             print(f"    ✓ {symbol}: {len(df_resampled)} periods (resampled to {target_timeframe})")
@@ -565,12 +565,97 @@ def main():
     print(f"  Columns: {list(combined_df.columns)}")
     print()
     
-    # Step 4: Save to parquet
-    print("Step 4: Saving dataset...")
+    # Step 4: Fetch and merge Macro Data (Phase 7 Sprint 1)
+    print("Step 4: Fetching Macroeconomic Indicators...")
+    print("  Phase 7: The Grand Unified Brain - Macro Eye")
+    print()
+    
+    try:
+        # Fetch macro data (VIX, DXY, TNX)
+        macro_df = fetch_macro_data(years=3, target_timeframe="15Min")
+        
+        if not macro_df.empty:
+            # Merge macro data into combined_df
+            # Macro data is global (same for all tickers), so we merge on timestamp
+            print("  Merging macro data into crypto dataset...")
+            
+            # Ensure timestamp is datetime in both DataFrames
+            combined_df['timestamp'] = pd.to_datetime(combined_df['timestamp'])
+            macro_df['timestamp'] = pd.to_datetime(macro_df['timestamp'])
+            
+            # Merge macro data (left join to preserve all crypto timestamps)
+            combined_df = combined_df.merge(macro_df, on='timestamp', how='left')
+            
+            # Forward fill macro data (global indicators don't change per ticker)
+            macro_cols = ['vix', 'dxy', 'tnx']
+            for col in macro_cols:
+                if col in combined_df.columns:
+                    combined_df[col] = combined_df.groupby('ticker')[col].transform(lambda x: x.ffill().bfill())
+            
+            print(f"  ✓ Macro data merged: {len([c for c in macro_cols if c in combined_df.columns])} indicators")
+        else:
+            print("  ⚠ Warning: No macro data fetched, continuing without macro indicators")
+            # Add empty columns to maintain structure
+            for col in ['vix', 'dxy', 'tnx']:
+                combined_df[col] = np.nan
+        
+        # Calculate BTC SMA 200 and macro_trend_score
+        print("  Calculating BTC trend indicators...")
+        btc_data = combined_df[combined_df['ticker'] == 'BTC'].copy()
+        
+        if not btc_data.empty:
+            # Sort by timestamp
+            btc_data = btc_data.sort_values('timestamp').reset_index(drop=True)
+            
+            # Calculate 200-period SMA (for 15Min bars, 200 periods = ~50 hours = ~2 days)
+            # For a true 200-day SMA, we'd need: 200 days * 24 hours * 4 (15min periods) = 19,200 periods
+            # But for high-frequency trading, we'll use a shorter window (e.g., 200 periods = ~50 hours)
+            # This represents the "medium-term" trend
+            sma_periods = 200  # 200 * 15min = 50 hours = ~2 days
+            btc_data['btc_sma_200'] = btc_data['close'].rolling(window=sma_periods, min_periods=1).mean()
+            
+            # Calculate macro_trend_score: (BTC_Price - SMA_200) / SMA_200
+            # Positive = Bull (price above trend), Negative = Bear (price below trend)
+            btc_data['macro_trend_score'] = (btc_data['close'] - btc_data['btc_sma_200']) / btc_data['btc_sma_200']
+            
+            # Merge BTC trend indicators back into combined_df
+            btc_trend_cols = ['timestamp', 'btc_sma_200', 'macro_trend_score']
+            btc_trend_df = btc_data[btc_trend_cols].copy()
+            
+            # Merge on timestamp (these are global indicators, same for all tickers)
+            combined_df = combined_df.merge(btc_trend_df, on='timestamp', how='left', suffixes=('', '_btc'))
+            
+            # Forward fill BTC trend indicators (global, same for all tickers)
+            for col in ['btc_sma_200', 'macro_trend_score']:
+                if col in combined_df.columns:
+                    combined_df[col] = combined_df.groupby('ticker')[col].transform(lambda x: x.ffill().bfill())
+            
+            print(f"  ✓ BTC trend indicators calculated: btc_sma_200, macro_trend_score")
+        else:
+            print("  ⚠ Warning: No BTC data found, skipping trend indicators")
+            combined_df['btc_sma_200'] = np.nan
+            combined_df['macro_trend_score'] = np.nan
+        
+        print()
+        
+    except Exception as e:
+        print(f"  ⚠ Warning: Error fetching/merging macro data: {e}")
+        print("  Continuing without macro indicators...")
+        import traceback
+        traceback.print_exc()
+        # Add empty columns to maintain structure
+        for col in ['vix', 'dxy', 'tnx', 'btc_sma_200', 'macro_trend_score']:
+            if col not in combined_df.columns:
+                combined_df[col] = np.nan
+        print()
+    
+    # Step 5: Save to parquet
+    print("Step 5: Saving dataset...")
     output_dir = project_root / "data" / "processed"
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    output_path = output_dir / "crypto_deep_master.parquet"
+    # Phase 7: Save to crypto_macro_v1.parquet (includes macro indicators)
+    output_path = output_dir / "crypto_macro_v1.parquet"
     
     try:
         combined_df.to_parquet(output_path, index=False)
@@ -604,10 +689,12 @@ def main():
     print("  ✓ Technical Analysis: Price/Volume (OHLCV)")
     print("  ✓ Fundamental Analysis: Developer activity, Community stats")
     print("  ✓ Synthetic History: Jittered fundamentals for training")
+    print("  ✓ Macro Indicators: VIX, DXY, TNX (Phase 7: Global Awareness)")
+    print("  ✓ Trend Indicators: BTC SMA 200, macro_trend_score")
     print()
     print("Next Steps:")
-    print("  - Use this dataset for HDRL agent training")
-    print("  - Add sentiment analysis (LLM-scored news) in next phase")
+    print("  - Use this dataset for HDRL agent training with macro awareness")
+    print("  - Phase 7 Sprint 2: Implement Regime Validator (Rule-Based General)")
     print()
 
 

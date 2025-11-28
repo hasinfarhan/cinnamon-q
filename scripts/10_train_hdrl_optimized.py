@@ -102,27 +102,45 @@ def main():
     print()
     
     # --- PATHS ---
-    # Phase 5.2: Super Brain - Use TA features (crypto_deep_v2.parquet)
-    # Fallback to v1 if v2 doesn't exist
+    # Phase 6: World-Class Brain - Prefer v3 (GARCH + TA), fallback to v2, then v1
+    v3_data_path = project_root / "data" / "processed" / "crypto_deep_v3.parquet"
     v2_data_path = project_root / "data" / "processed" / "crypto_deep_v2.parquet"
     v1_data_path = project_root / "data" / "processed" / "crypto_training_data.parquet"
+    master_data_path = project_root / "data" / "processed" / "crypto_deep_master.parquet"
     
-    if v2_data_path.exists():
+    if v3_data_path.exists():
+        data_path = v3_data_path
+        print("✓ Using crypto_deep_v3.parquet (with GARCH + TA features) - World-Class Brain mode!")
+    elif v2_data_path.exists():
         data_path = v2_data_path
-        print("✓ Using crypto_deep_v2.parquet (with TA features) - Super Brain mode!")
-    else:
+        print("⚠ Using crypto_deep_v2.parquet (with TA features, no GARCH) - Super Brain mode!")
+    elif v1_data_path.exists():
         data_path = v1_data_path
         print("⚠ Using crypto_training_data.parquet (no TA features)")
         print("  For best results, run: python scripts/12_enrich_data.py")
+    elif master_data_path.exists():
+        data_path = master_data_path
+        print("⚠ Using crypto_deep_master.parquet (no TA features, no utility_score)")
+    else:
+        raise FileNotFoundError(
+            f"Dataset not found. Please run scripts/08_fetch_crypto_deep.py and scripts/12_enrich_data.py first."
+        )
     
-    # Super Brain models go to separate directory (won't overwrite production)
-    # If v2 exists, this is Super Brain (LSTM + TA), otherwise regular LSTM
-    # Phase 5.6: Fortress Brain - Save to new directory to compare with Super Brain
-    if v2_data_path.exists():
+    # Model directory selection based on data version
+    # Phase 6: World-Class Brain (v3) -> hdrl_worldclass_v1
+    # Phase 5.6: Fortress Brain (v2) -> hdrl_fortress_v1
+    # Phase 5.2: Super Brain (v2) -> hdrl_super_brain (legacy)
+    # Phase 5.1: Regular LSTM (v1) -> hdrl_lstm
+    if v3_data_path.exists() and data_path == v3_data_path:
+        model_dir = project_root / "models" / "hdrl_worldclass_v1"
+        log_dir = project_root / "logs" / "hdrl_training_worldclass_v1"
+        print("  🧠 World-Class Brain mode (Phase 6): GARCH + DIR + Calmar!")
+        print("  📁 Model directory: models/hdrl_worldclass_v1")
+    elif v2_data_path.exists() and data_path == v2_data_path:
         model_dir = project_root / "models" / "hdrl_fortress_v1"
         log_dir = project_root / "logs" / "hdrl_training_fortress_v1"
         print("  🛡️ Fortress Brain mode: Training with TA features + Composite Reward!")
-        print("  📁 Model directory: models/hdrl_fortress_v1 (separate from Super Brain)")
+        print("  📁 Model directory: models/hdrl_fortress_v1")
     else:
         model_dir = project_root / "models" / "hdrl_lstm"
         log_dir = project_root / "logs" / "hdrl_training_lstm"

@@ -203,7 +203,40 @@ def evaluate_model(
     temp_dir = Path(tempfile.mkdtemp(prefix="eval_data_"))
     
     try:
-        data_config = prepare_training_data(data_path, temp_dir)
+        # Phase 5.5 Sprint 3: Filter data by regime date range if specified
+        filtered_data_path = data_path
+        if start_date or end_date:
+            print(f"  📅 Filtering data: {start_date or 'start'} to {end_date or 'end'}")
+            df = pd.read_parquet(data_path)
+            
+            # Ensure timestamp is datetime
+            if not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
+                df['timestamp'] = pd.to_datetime(df['timestamp'])
+            
+            # Filter by date range
+            if start_date:
+                start_dt = pd.to_datetime(start_date)
+                df = df[df['timestamp'] >= start_dt]
+            if end_date:
+                end_dt = pd.to_datetime(end_date)
+                df = df[df['timestamp'] <= end_dt]
+            
+            if df.empty:
+                print(f"  ⚠ No data in date range, skipping evaluation")
+                return {
+                    "sortino_ratio": 0.0,
+                    "sharpe_ratio": 0.0,
+                    "total_return": 0.0,
+                    "max_drawdown": 0.0,
+                    "episodes": 0
+                }
+            
+            # Save filtered data to temporary file
+            filtered_data_path = temp_dir / "filtered_data.parquet"
+            df.to_parquet(filtered_data_path, index=False)
+            print(f"  ✓ Filtered to {len(df):,} rows")
+        
+        data_config = prepare_training_data(filtered_data_path, temp_dir)
         
         # Use last 10% of data for evaluation (unseen)
         # FEE_RATE must match training environment to avoid training/serving skew
@@ -390,7 +423,40 @@ def evaluate_benchmark(
     temp_dir = Path(tempfile.mkdtemp(prefix="eval_benchmark_"))
     
     try:
-        data_config = prepare_training_data(data_path, temp_dir)
+        # Phase 5.5 Sprint 3: Filter data by regime date range if specified
+        filtered_data_path = data_path
+        if start_date or end_date:
+            print(f"  📅 Filtering data: {start_date or 'start'} to {end_date or 'end'}")
+            df = pd.read_parquet(data_path)
+            
+            # Ensure timestamp is datetime
+            if not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
+                df['timestamp'] = pd.to_datetime(df['timestamp'])
+            
+            # Filter by date range
+            if start_date:
+                start_dt = pd.to_datetime(start_date)
+                df = df[df['timestamp'] >= start_dt]
+            if end_date:
+                end_dt = pd.to_datetime(end_date)
+                df = df[df['timestamp'] <= end_dt]
+            
+            if df.empty:
+                print(f"  ⚠ No data in date range, skipping evaluation")
+                return {
+                    "sortino_ratio": 0.0,
+                    "sharpe_ratio": 0.0,
+                    "total_return": 0.0,
+                    "max_drawdown": 0.0,
+                    "episodes": 0
+                }
+            
+            # Save filtered data to temporary file
+            filtered_data_path = temp_dir / "filtered_data.parquet"
+            df.to_parquet(filtered_data_path, index=False)
+            print(f"  ✓ Filtered to {len(df):,} rows")
+        
+        data_config = prepare_training_data(filtered_data_path, temp_dir)
         
         # Use last 10% of data for evaluation (unseen)
         # FEE_RATE must match training environment to avoid training/serving skew
@@ -522,10 +588,10 @@ def evaluate_benchmark(
 
 
 def main():
-    """Main comparison execution."""
+    """Main comparison execution with regime-based testing."""
     print("=" * 80)
-    print("🏆 The Champion vs. Champion Battle")
-    print("Phase 5.2: LSTM Upgrade - Final Validation")
+    print("🏆 The Regime Tournament")
+    print("Phase 5.5 Sprint 3: Regime Benchmark Suite")
     print("=" * 80)
     print()
     
@@ -535,133 +601,195 @@ def main():
         print("Please run scripts/08_fetch_crypto_deep.py first.")
         sys.exit(1)
     
-    # Evaluate MLP Model (Champion)
-    mlp_metrics = evaluate_model(
-        MLP_MODEL_PATH,
-        MLP_VECNORM_PATH,
-        DATA_PATH,
-        "MLP Model (Champion)",
-        n_episodes=N_EPISODES
-    )
+    # Phase 5.5 Sprint 3: Loop through regimes
+    all_regime_results = {}
     
-    # Evaluate LSTM Model (Challenger)
-    lstm_metrics = evaluate_model(
-        LSTM_MODEL_PATH,
-        LSTM_VECNORM_PATH,
-        DATA_PATH,
-        "LSTM Model (Challenger)",
-        n_episodes=N_EPISODES
-    )
-    
-    # Evaluate Benchmark Strategies (Control Groups)
-    print("\n" + "=" * 80)
-    print("Evaluating Benchmark Strategies (Control Groups)")
-    print("=" * 80)
-    
-    # Buy and Hold
-    buy_hold_metrics = evaluate_benchmark(
-        BuyAndHoldStrategy(data_path=DATA_PATH),
-        DATA_PATH,
-        "Buy and Hold (Passive)",
-        n_episodes=N_EPISODES
-    )
-    
-    # Mean Reversion (Bollinger Bands)
-    mean_rev_metrics = evaluate_benchmark(
-        MeanReversionStrategy(data_path=DATA_PATH, window=20, num_std_dev=2.0),  # Updated to Bollinger Bands
-        DATA_PATH,
-        "Mean Reversion (Bollinger Bands)",
-        n_episodes=N_EPISODES
-    )
-    
-    # Trend Following
-    trend_metrics = evaluate_benchmark(
-        TrendFollowingStrategy(data_path=DATA_PATH, window=200),
-        DATA_PATH,
-        "Trend Following (Momentum)",
-        n_episodes=N_EPISODES
-    )
+    for regime_name, (start_date, end_date) in REGIMES.items():
+        print("\n" + "=" * 80)
+        print(f"📊 REGIME: {regime_name}")
+        if start_date and end_date:
+            print(f"   Date Range: {start_date} to {end_date}")
+        else:
+            print(f"   Date Range: All available data")
+        print("=" * 80)
+        print()
+        
+        # Evaluate MLP Model (Champion)
+        mlp_metrics = evaluate_model(
+            MLP_MODEL_PATH,
+            MLP_VECNORM_PATH,
+            DATA_PATH,
+            "MLP Model (Champion)",
+            n_episodes=N_EPISODES,
+            start_date=start_date,
+            end_date=end_date
+        )
+        
+        # Evaluate LSTM Model (Challenger)
+        lstm_metrics = evaluate_model(
+            LSTM_MODEL_PATH,
+            LSTM_VECNORM_PATH,
+            DATA_PATH,
+            "LSTM Model (Challenger)",
+            n_episodes=N_EPISODES,
+            start_date=start_date,
+            end_date=end_date
+        )
+        
+        # Evaluate Benchmark Strategies (Control Groups)
+        print("\n" + "=" * 80)
+        print("Evaluating Benchmark Strategies (Control Groups)")
+        print("=" * 80)
+        
+        # Buy and Hold
+        buy_hold_metrics = evaluate_benchmark(
+            BuyAndHoldStrategy(data_path=DATA_PATH),
+            DATA_PATH,
+            "Buy and Hold (Passive)",
+            n_episodes=N_EPISODES,
+            start_date=start_date,
+            end_date=end_date
+        )
+        
+        # Mean Reversion (Bollinger Bands)
+        mean_rev_metrics = evaluate_benchmark(
+            MeanReversionStrategy(data_path=DATA_PATH, window=20, num_std_dev=2.0),
+            DATA_PATH,
+            "Mean Reversion (Bollinger Bands)",
+            n_episodes=N_EPISODES,
+            start_date=start_date,
+            end_date=end_date
+        )
+        
+        # Trend Following
+        trend_metrics = evaluate_benchmark(
+            TrendFollowingStrategy(data_path=DATA_PATH, window=200),
+            DATA_PATH,
+            "Trend Following (Momentum)",
+            n_episodes=N_EPISODES,
+            start_date=start_date,
+            end_date=end_date
+        )
+        
+        # Blue Chip (Phase 5.5 Sprint 3)
+        bluechip_metrics = evaluate_benchmark(
+            BlueChipStrategy(data_path=DATA_PATH),
+            DATA_PATH,
+            "Blue Chip (BTC/ETH/SOL)",
+            n_episodes=N_EPISODES,
+            start_date=start_date,
+            end_date=end_date
+        )
+        
+        # Volatility Grid (Phase 5.5 Sprint 3)
+        grid_metrics = evaluate_benchmark(
+            VolatilityGridStrategy(data_path=DATA_PATH, window=20, num_std_dev=2.0),
+            DATA_PATH,
+            "Volatility Grid (Chop Master)",
+            n_episodes=N_EPISODES,
+            start_date=start_date,
+            end_date=end_date
+        )
+        
+        # Collect all results for this regime
+        all_results = {
+            "MLP (AI)": mlp_metrics,
+            "LSTM (AI)": lstm_metrics,
+            "Buy & Hold": buy_hold_metrics,
+            "Mean Reversion": mean_rev_metrics,
+            "Trend Following": trend_metrics,
+            "Blue Chip": bluechip_metrics,
+            "Volatility Grid": grid_metrics
+        }
+        
+        all_regime_results[regime_name] = all_results
+        
+        # Print leaderboard for this regime
+        print("\n" + "=" * 80)
+        print(f"🏁 {regime_name.upper()} - LEADERBOARD")
+        print("=" * 80)
+        print()
+        
+        # Sort by Sortino Ratio (primary metric)
+        sorted_results = sorted(
+            all_results.items(),
+            key=lambda x: x[1]["sortino_ratio"],
+            reverse=True
+        )
+        
+        print(f"{'Rank':<6} {'Strategy':<25} {'Sortino':<12} {'Sharpe':<12} {'Return %':<12} {'Max DD %':<12}")
+        print("-" * 80)
+        
+        for rank, (name, metrics) in enumerate(sorted_results, 1):
+            medal = "🥇" if rank == 1 else "🥈" if rank == 2 else "🥉" if rank == 3 else "  "
+            print(f"{medal} {rank:<4} {name:<25} {metrics['sortino_ratio']:<12.4f} "
+                  f"{metrics['sharpe_ratio']:<12.4f} {metrics['total_return']*100:<12.2f} "
+                  f"{metrics['max_drawdown']:<12.2f}")
+        
+        print()
+        print("=" * 80)
     
     # ============================================================================
-    # The Tournament - Full Comparison
+    # Cross-Regime Analysis
     # ============================================================================
     print("\n" + "=" * 80)
-    print("🏁 THE TOURNAMENT - FULL RESULTS")
+    print("📊 CROSS-REGIME SCORECARD")
     print("=" * 80)
     print()
     
-    # Collect all results
-    all_results = {
-        "MLP (AI)": mlp_metrics,
-        "LSTM (AI)": lstm_metrics,
-        "Buy & Hold": buy_hold_metrics,
-        "Mean Reversion": mean_rev_metrics,
-        "Trend Following": trend_metrics
+    # Calculate average Sortino across all regimes for each strategy
+    strategy_scores = {}
+    for regime_name, results in all_regime_results.items():
+        for strategy_name, metrics in results.items():
+            if strategy_name not in strategy_scores:
+                strategy_scores[strategy_name] = []
+            strategy_scores[strategy_name].append(metrics['sortino_ratio'])
+    
+    # Calculate averages
+    strategy_averages = {
+        name: np.mean(scores) if scores else 0.0
+        for name, scores in strategy_scores.items()
     }
     
-    # Sort by Sortino Ratio (primary metric)
-    sorted_results = sorted(
-        all_results.items(),
-        key=lambda x: x[1]["sortino_ratio"],
+    # Sort by average Sortino
+    sorted_averages = sorted(
+        strategy_averages.items(),
+        key=lambda x: x[1],
         reverse=True
     )
     
-    print(f"{'Rank':<6} {'Strategy':<25} {'Sortino':<12} {'Sharpe':<12} {'Return %':<12} {'Max DD %':<12}")
-    print("-" * 80)
-    
-    for rank, (name, metrics) in enumerate(sorted_results, 1):
-        medal = "🥇" if rank == 1 else "🥈" if rank == 2 else "🥉" if rank == 3 else "  "
-        print(f"{medal} {rank:<4} {name:<25} {metrics['sortino_ratio']:<12.4f} "
-              f"{metrics['sharpe_ratio']:<12.4f} {metrics['total_return']*100:<12.2f} "
-              f"{metrics['max_drawdown']:<12.2f}")
+    print(f"{'Strategy':<25} {'Avg Sortino':<15} {'Regimes':<10}")
+    print("-" * 50)
+    for name, avg_sortino in sorted_averages:
+        n_regimes = len(strategy_scores[name])
+        print(f"{name:<25} {avg_sortino:<15.4f} {n_regimes:<10}")
     
     print()
     print("=" * 80)
     
-    # Analysis
-    winner_name, winner_metrics = sorted_results[0]
-    ai_models = [("MLP", mlp_metrics), ("LSTM", lstm_metrics)]
-    benchmarks = [("Buy & Hold", buy_hold_metrics), ("Mean Reversion", mean_rev_metrics), ("Trend Following", trend_metrics)]
+    # Final analysis
+    best_overall = sorted_averages[0]
+    ai_models = [("MLP", strategy_averages.get("MLP (AI)", 0.0)), 
+                 ("LSTM", strategy_averages.get("LSTM (AI)", 0.0))]
+    best_ai = max(ai_models, key=lambda x: x[1])
     
-    best_ai = max(ai_models, key=lambda x: x[1]["sortino_ratio"])
-    best_benchmark = max(benchmarks, key=lambda x: x[1]["sortino_ratio"])
-    
-    print("📊 ANALYSIS")
+    print("📊 FINAL ANALYSIS")
     print("=" * 80)
     print()
-    
-    if winner_name in ["MLP (AI)", "LSTM (AI)"]:
-        print(f"✅ AI WINS! {winner_name} has the highest Sortino Ratio")
-        print(f"   AI outperformed all benchmarks - complexity adds value!")
-    elif winner_name in ["Buy & Hold", "Mean Reversion", "Trend Following"]:
-        print(f"⚠️  BENCHMARK WINS! {winner_name} has the highest Sortino Ratio")
-        print(f"   This suggests:")
-        print(f"   - Market regime favors simple strategies")
-        print(f"   - AI may be overfitting or over-trading")
-        print(f"   - Consider: Reduce trading frequency, add regime detection")
-    
+    print(f"Best Overall Strategy: {best_overall[0]} (Avg Sortino: {best_overall[1]:.4f})")
+    print(f"Best AI Model: {best_ai[0]} (Avg Sortino: {best_ai[1]:.4f})")
     print()
-    print(f"Best AI Model: {best_ai[0]} (Sortino: {best_ai[1]['sortino_ratio']:.4f})")
-    print(f"Best Benchmark: {best_benchmark[0]} (Sortino: {best_benchmark[1]['sortino_ratio']:.4f})")
     
-    if best_ai[1]["sortino_ratio"] > best_benchmark[1]["sortino_ratio"]:
-        print()
-        print("✅ AI beats benchmarks - The brain is working!")
-        if best_ai[0] == "LSTM":
-            print()
-            print("🚀 Deployment Recommendation: Deploy LSTM Model")
-            print("  1. Backup current MLP model to models/archive/")
-            print("  2. Copy LSTM model to models/hdrl_optimized/")
-            print("  3. Restart bot: python main.py")
+    if best_overall[0] in ["MLP (AI)", "LSTM (AI)"]:
+        print("✅ AI WINS ACROSS ALL REGIMES!")
+        print("   The brain is robust and adaptive.")
     else:
-        print()
-        print("⚠️  Benchmarks beat AI - Consider:")
-        print("  - Retraining with more data")
-        print("  - Adjusting reward function")
-        print("  - Adding regime detection (switch strategies based on market conditions)")
+        print("⚠️  Benchmarks win overall - AI needs improvement")
+        print("   Consider: Retraining with fees, regime detection, better features")
     
     print()
     print("=" * 80)
+
 
 
 if __name__ == "__main__":

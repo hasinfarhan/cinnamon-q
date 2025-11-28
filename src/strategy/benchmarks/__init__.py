@@ -16,6 +16,8 @@ Philosophies:
 from .buy_and_hold import BuyAndHoldStrategy
 from .mean_reversion import MeanReversionStrategy
 from .trend import TrendFollowingStrategy
+from .blue_chip import BlueChipStrategy
+from .volatility_grid import VolatilityGridStrategy
 
 __all__ = [
     "BuyAndHoldStrategy",

@@ -30,6 +30,8 @@ from strategy.allocators.top_k import TopKEqualWeight
 from strategy.benchmarks.buy_and_hold import BuyAndHoldStrategy
 from strategy.benchmarks.mean_reversion import MeanReversionStrategy
 from strategy.benchmarks.trend import TrendFollowingStrategy
+from strategy.benchmarks.blue_chip import BlueChipStrategy
+from strategy.benchmarks.volatility_grid import VolatilityGridStrategy
 from strategy.engine import StrategyEngine
 from strategy.ppo_strategy import PPOStrategy
 from strategy.signals.momentum import MomentumSignal
@@ -175,6 +177,29 @@ class BotOrchestrator:
             return TrendFollowingStrategy(
                 data_path=data_path,
                 window=window
+            )
+        
+        if strategy_config.signal == "benchmark_bluechip":
+            # Blue Chip: Equal weight BTC, ETH, SOL only
+            params = strategy_config.params
+            data_path = params.get("data_path", "data/processed/crypto_deep_v2.parquet")
+            data_path = project_root / data_path if not Path(data_path).is_absolute() else Path(data_path)
+            
+            return BlueChipStrategy(data_path=data_path)
+        
+        if strategy_config.signal == "benchmark_grid":
+            # Volatility Grid: Bollinger Band grid trading
+            params = strategy_config.params
+            data_path = params.get("data_path", "data/processed/crypto_deep_v2.parquet")
+            data_path = project_root / data_path if not Path(data_path).is_absolute() else Path(data_path)
+            
+            window = params.get("window", 20)
+            num_std_dev = params.get("num_std_dev", 2.0)
+            
+            return VolatilityGridStrategy(
+                data_path=data_path,
+                window=window,
+                num_std_dev=num_std_dev
             )
         
         # Handle PPO strategy

@@ -19,7 +19,7 @@ Metrics:
 
 import sys
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional
 
 import numpy as np
 import pandas as pd
@@ -31,6 +31,8 @@ sys.path.insert(0, str(project_root / "src"))
 from strategy.benchmarks.buy_and_hold import BuyAndHoldStrategy
 from strategy.benchmarks.mean_reversion import MeanReversionStrategy
 from strategy.benchmarks.trend import TrendFollowingStrategy
+from strategy.benchmarks.blue_chip import BlueChipStrategy
+from strategy.benchmarks.volatility_grid import VolatilityGridStrategy
 from strategy.ppo_strategy import PPOStrategy
 from strategy.rl.fast_env import FastCryptoEnv
 from strategy.rl.data_loader import prepare_training_data
@@ -54,6 +56,14 @@ DATA_PATH = project_root / "data" / "processed" / "crypto_training_data.parquet"
 # Evaluation parameters
 EVAL_DATA_SPLIT = 0.1  # Use last 10% of data for evaluation (unseen)
 N_EPISODES = 5  # Number of evaluation episodes per model
+
+# Regime definitions (Phase 5.5 Sprint 3: Regime Tournament)
+REGIMES = {
+    "Overall": (None, None),  # All available data
+    "Bear Winter (2022)": ("2022-01-01", "2022-12-31"),
+    "Bull Run (2023-24)": ("2023-10-01", "2024-03-31"),
+    "Sideways (2023)": ("2023-04-01", "2023-09-30")
+}
 
 # Fee rate configuration
 # CRITICAL: Match the fee_rate used during training!
@@ -156,7 +166,9 @@ def evaluate_model(
     vec_norm_path: Path,
     data_path: Path,
     model_name: str,
-    n_episodes: int = 5
+    n_episodes: int = 5,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None
 ) -> Dict[str, float]:
     """
     Evaluate a model by running it through the environment.
@@ -353,7 +365,9 @@ def evaluate_benchmark(
     strategy,
     data_path: Path,
     strategy_name: str,
-    n_episodes: int = 5
+    n_episodes: int = 5,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None
 ) -> Dict[str, float]:
     """
     Evaluate a benchmark strategy by running it through the environment.

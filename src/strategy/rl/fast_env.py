@@ -92,6 +92,18 @@ class FastCryptoEnv(gym.Env):
             self.has_correlation = data_config.get('has_correlation', False)
             if self.has_correlation:
                 self.corr_array = np.load(data_config['corr_path'], mmap_mode='r')
+            
+            # Phase 6 Sprint 2: Load benchmark returns for DIR calculation
+            if 'benchmark_path' in data_config:
+                benchmark_array = np.load(data_config['benchmark_path'], mmap_mode='r')
+                self.benchmark_returns = benchmark_array
+            elif benchmark_returns is not None:
+                # Use provided benchmark_returns (for backward compatibility)
+                self.benchmark_returns = np.array(benchmark_returns, dtype=np.float32)
+            else:
+                # Fallback: zero benchmark (no DIR)
+                self.benchmark_returns = None
+            
             self.asset_list = data_config['asset_list']
             self.timestamps = data_config['timestamps']
             self.n_steps = data_config['n_steps']

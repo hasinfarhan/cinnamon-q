@@ -499,16 +499,21 @@ class FastCryptoEnv(gym.Env):
             'peak_equity': float(self.peak_equity),  # Phase 5.6: High water mark
             'current_drawdown': float(current_drawdown),  # Phase 5.6: Current drawdown percentage
             'portfolio_return': float(net_portfolio_return),  # Net return after fees
+            'benchmark_return': float(r_benchmark),  # Phase 6: Benchmark return (BTC)
+            'active_return': float(r_active),  # Phase 6: Active return (portfolio - benchmark)
             'gross_return': float(portfolio_return),  # Gross return before fees
             'transaction_cost': float(transaction_cost),  # Fees paid this step
             'turnover': float(turnover),  # Trading activity (sum of abs weight changes)
             'step': int(self.current_step),
-            'reward_type': 'composite_fortress',  # Phase 5.6: Composite reward
+            'reward_type': 'dir_calmar',  # Phase 6: DIR + Calmar composite reward
             'reward_components': {
-                'return': float(r_t),
-                'downside_penalty': float(downside_penalty),
+                'differential_ratio': float(D_t),
                 'drawdown_penalty': float(drawdown_penalty),
-                'composite_reward': float(reward)
+                'composite_reward': float(reward),
+                'dir_state': {
+                    'A_t': float(self.A_t),  # Running mean of active return
+                    'B_t': float(self.B_t)   # Running variance of active return
+                }
             }
         }
         

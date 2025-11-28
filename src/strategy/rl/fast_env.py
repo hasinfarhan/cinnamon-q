@@ -422,16 +422,40 @@ class FastCryptoEnv(gym.Env):
         # Store current weights for next step's turnover calculation
         self.prev_weights = weights.copy()
         
-        # Phase 5.6 Sprint 1: Calculate Composite Reward (Fortress Brain)
-        # Formula: R_total = r_t - (w1 * downside) - (w2 * drawdown^2)
+        # Phase 6 Sprint 2: Calculate Differential Information Ratio (DIR)
+        # This rewards "active return" (beating the benchmark) while maintaining Calmar penalty
         
-        # 1. Return component (r_t) - The Gas
-        r_t = float(net_portfolio_return)
+        # 1. Get portfolio return (r_portfolio)
+        r_portfolio = float(net_portfolio_return)
         
-        # 2. Sortino Penalty (The Brakes) - Penalize only negative returns
-        downside_penalty = abs(r_t) if r_t < 0 else 0.0
+        # 2. Get benchmark return (r_benchmark) - BTC/USD returns
+        if self.benchmark_returns is not None and self.current_step < len(self.benchmark_returns):
+            r_benchmark = float(self.benchmark_returns[self.current_step])
+        else:
+            r_benchmark = 0.0  # No benchmark = no DIR penalty
         
-        # 3. Calmar Penalty (The Airbag) - Quadratic penalty on drawdown
+        # 3. Calculate Active Return (r_active = r_portfolio - r_benchmark)
+        r_active = r_portfolio - r_benchmark
+        
+        # 4. Update Moving Averages (Exponential Moving Average)
+        # EMA update: A_t = A_t + eta * (r_active - A_t)
+        delta = r_active - self.A_t
+        self.A_t = self.A_t + self.eta * delta
+        self.B_t = self.B_t + self.eta * (r_active**2 - self.B_t)
+        
+        # 5. Calculate Differential Ratio (D_t)
+        # Formula: D_t = (B_t * delta - 0.5 * A_t * (r_active^2 - B_t)) / (B_t - A_t^2)^1.5
+        # This measures the incremental contribution to Information Ratio
+        epsilon = 1e-8  # Safety: prevent division by zero
+        denominator = (self.B_t - self.A_t**2)**1.5
+        if abs(denominator) < epsilon:
+            # Fallback: use simple active return if denominator too small
+            D_t = r_active
+        else:
+            numerator = self.B_t * delta - 0.5 * self.A_t * (r_active**2 - self.B_t)
+            D_t = numerator / denominator
+        
+        # 6. Calmar Penalty (The Airbag) - Quadratic penalty on drawdown
         # Calculate current drawdown from peak equity
         if self.peak_equity > 1e-8:  # Avoid division by zero
             current_drawdown = (self.peak_equity - float(self.portfolio_value)) / self.peak_equity
@@ -443,8 +467,10 @@ class FastCryptoEnv(gym.Env):
         # Quadratic penalty: 10% drawdown hurts 4x more than 5%
         drawdown_penalty = current_drawdown ** 2
         
-        # Composite Reward
-        reward = r_t - (self.sortino_coeff * downside_penalty) - (self.calmar_coeff * drawdown_penalty)
+        # 7. Composite Reward (Phase 6: DIR + Calmar)
+        # reward = DIR - (calmar_coeff * drawdown^2) - transaction_cost
+        # Note: Transaction cost already subtracted from r_portfolio, so we use D_t directly
+        reward = D_t - (self.calmar_coeff * drawdown_penalty)
         
         # Move to next step
         self.current_step += 1

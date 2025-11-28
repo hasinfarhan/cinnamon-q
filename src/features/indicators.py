@@ -372,7 +372,7 @@ class TechnicalAnalysis:
         pivoted = df_enriched.pivot(index='timestamp', columns='ticker', values='close')
         
         # Calculate percentage returns (needed for correlation)
-        returns = pivoted.pct_change().dropna()
+        returns = pivoted.pct_change(fill_method=None).dropna()
         
         # Check if benchmark exists
         if benchmark_ticker not in returns.columns:
@@ -458,11 +458,15 @@ class TechnicalAnalysis:
             how='left'
         )
         
-        # Fill NaNs: Use 1.0 as conservative default (assume correlated if unknown)
-        # This is safe because:
-        # - Early history (before window periods): Assume correlated
-        # - Missing data: Assume correlated (conservative)
-        df_enriched['corr_btc'] = df_enriched['corr_btc'].fillna(1.0)
+        # Ensure corr_btc column exists (in case merge didn't create it)
+        if 'corr_btc' not in df_enriched.columns:
+            df_enriched['corr_btc'] = 1.0  # Default: assume correlated
+        else:
+            # Fill NaNs: Use 1.0 as conservative default (assume correlated if unknown)
+            # This is safe because:
+            # - Early history (before window periods): Assume correlated
+            # - Missing data: Assume correlated (conservative)
+            df_enriched['corr_btc'] = df_enriched['corr_btc'].fillna(1.0)
         
         # Clip to valid correlation range [-1, 1] (safety check)
         df_enriched['corr_btc'] = df_enriched['corr_btc'].clip(-1.0, 1.0)

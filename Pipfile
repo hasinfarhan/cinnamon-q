@@ -41,6 +41,7 @@ rich = "*"
 pyportfolioopt = "*"
 shap = "*"
 sb3-contrib = "*"
+arch = "*"
 
 [dev-packages]
 

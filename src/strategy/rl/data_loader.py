@@ -179,8 +179,11 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
         price_pivot = df.pivot(index='timestamp', columns='ticker', values='close')
         
         # Phase 5.5 Sprint 2: Pivot correlation feature if present
+        # Only create corr_pivot if correlation actually exists in the data
         if has_correlation:
             corr_pivot = df.pivot(index='timestamp', columns='ticker', values='corr_btc_norm')
+        else:
+            corr_pivot = None  # Don't create if not present
         
         # Pivot TA features if present
         if has_ta_features:
@@ -201,6 +204,8 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
         # Phase 5.5 Sprint 2: Pivot correlation feature if present
         if has_correlation:
             corr_pivot = df.pivot_table(index='timestamp', columns='ticker', values='corr_btc_norm', aggfunc='first')
+        else:
+            corr_pivot = None  # Don't create if not present
         
         if has_ta_features:
             rsi_pivot = df.pivot_table(index='timestamp', columns='ticker', values='RSI_14_norm', aggfunc='first')
@@ -232,7 +237,7 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
     price_pivot = price_pivot.ffill().fillna(0.0)
     
     # Phase 5.5 Sprint 2: Reindex correlation feature if present
-    if has_correlation:
+    if has_correlation and corr_pivot is not None:
         corr_pivot = corr_pivot.reindex(index=common_index, columns=common_columns)
         corr_pivot = corr_pivot.ffill().fillna(0.5)  # Neutral correlation = 0.5 (maps to corr=0)
     
@@ -261,11 +266,12 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
     price_array = price_pivot.values.astype(np.float32)
     
     # Phase 5.5 Sprint 2: Convert correlation array if present
-    if has_correlation:
+    # Only create if correlation actually exists (for backward compatibility)
+    if has_correlation and corr_pivot is not None:
         corr_array = corr_pivot.values.astype(np.float32)
     else:
-        # Create neutral array (0.5 = correlation 0) if not available
-        corr_array = np.full((n_steps, n_assets), 0.5, dtype=np.float32)
+        # Don't create array if correlation not present (backward compatibility)
+        corr_array = None
     
     # Convert TA arrays if present
     if has_ta_features:

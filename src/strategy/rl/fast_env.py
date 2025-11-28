@@ -73,7 +73,7 @@ class FastCryptoEnv(gym.Env):
             self.timestamps = data_config['timestamps']
             self.n_steps = data_config['n_steps']
             self.has_ta_features = data_config.get('has_ta_features', False)
-            self.has_correlation = data_config.get('has_correlation', False)
+            # has_correlation is set above when loading corr_array
             
             # Load TA arrays if present
             if self.has_ta_features:

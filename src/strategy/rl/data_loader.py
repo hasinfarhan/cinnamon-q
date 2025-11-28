@@ -335,9 +335,10 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
         volatility_array.nbytes +
         commit_array.nbytes +
         utility_array.nbytes +
-        price_array.nbytes +
-        corr_array.nbytes  # Phase 5.5 Sprint 2: Correlation feature
+        price_array.nbytes
     )
+    if corr_array is not None:
+        total_bytes += corr_array.nbytes  # Phase 5.5 Sprint 2: Correlation feature
     if has_ta_features:
         total_bytes += (
             rsi_array.nbytes +

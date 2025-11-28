@@ -114,12 +114,15 @@ class FastCryptoEnv(gym.Env):
         )
         
         # Define observation space DYNAMICALLY
-        # Base features per asset: [return, volatility, commit_count_norm, utility_score, corr_btc_norm] = 5
-        # Phase 5.5 Sprint 2: Added corr_btc_norm (rolling correlation to BTC)
+        # Base features per asset: [return, volatility, commit_count_norm, utility_score] = 4
+        # Phase 5.5 Sprint 2: Added corr_btc_norm (rolling correlation to BTC) = +1 (optional)
         # TA features per asset (if present): [RSI, MACD, BBW, ATR, SMA_RATIO] = 5
         # Plus: portfolio_value_norm, cash_weight = 2
         
-        base_features_per_asset = 5  # Phase 5.5: Now includes correlation (was 4)
+        # Backward compatibility: Use 4 base features if correlation not present
+        # This allows old models (trained with 70 features) to work with new code
+        has_corr = hasattr(self, 'has_correlation') and self.has_correlation
+        base_features_per_asset = 5 if has_corr else 4  # 5 if correlation present, 4 otherwise
         ta_features_per_asset = 5 if (hasattr(self, 'has_ta_features') and self.has_ta_features) else 0
         n_features_per_asset = base_features_per_asset + ta_features_per_asset
         n_obs_features = (self.n_assets * n_features_per_asset) + 2
@@ -245,9 +248,13 @@ class FastCryptoEnv(gym.Env):
             obs[idx + 1] = self.volatility_array[self.current_step, asset_idx]
             obs[idx + 2] = self.commit_array[self.current_step, asset_idx]
             obs[idx + 3] = self.utility_array[self.current_step, asset_idx]
-            # Phase 5.5 Sprint 2: Correlation feature (rolling correlation to BTC)
-            obs[idx + 4] = self.corr_array[self.current_step, asset_idx] if hasattr(self, 'corr_array') else 0.5
-            idx += 5  # Now 5 base features (was 4)
+            idx += 4  # Base features: 4
+            
+            # Phase 5.5 Sprint 2: Correlation feature (optional, for backward compatibility)
+            has_corr = hasattr(self, 'has_correlation') and self.has_correlation
+            if has_corr:
+                obs[idx] = self.corr_array[self.current_step, asset_idx] if hasattr(self, 'corr_array') else 0.5
+                idx += 1  # Add correlation feature
             
             # TA features (if present)
             if has_ta:

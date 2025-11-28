@@ -79,9 +79,6 @@ class FastCryptoEnv(gym.Env):
         # Phase 5.6 Sprint 1: Track peak equity (high water mark) for Calmar calculation
         self.peak_equity = 0.0
         
-        # Phase 5.6 Sprint 1: Track peak equity (high water mark) for Calmar calculation
-        self.peak_equity = 0.0
-        
         # Use memory-mapped files if provided, otherwise load from parquet
         if data_config is not None:
             # Lightweight initialization: load from memory-mapped files (zero-copy)

@@ -23,6 +23,7 @@ from strategy.optimizer.sortino_solver import SortinoRatioOptimizer
 from strategy.risk.semicovariance import SemicovarianceCalculator
 from strategy.rl.fast_env import FastCryptoEnv
 from strategy.validator.risk import CalmarRiskGate
+from strategy.validator.macro import MacroRegimeGate
 
 
 def load_asset_universe(universe_csv_path: Optional[Path] = None) -> list:

@@ -65,6 +65,9 @@ class FastCryptoEnv(gym.Env):
         # Phase 5.6 Sprint 1: Track peak equity (high water mark) for Calmar calculation
         self.peak_equity = 0.0
         
+        # Phase 5.6 Sprint 1: Track peak equity (high water mark) for Calmar calculation
+        self.peak_equity = 0.0
+        
         # Use memory-mapped files if provided, otherwise load from parquet
         if data_config is not None:
             # Lightweight initialization: load from memory-mapped files (zero-copy)
@@ -156,6 +159,9 @@ class FastCryptoEnv(gym.Env):
         self.portfolio_value = initial_cash
         self.current_weights = np.zeros(self.n_assets + 1, dtype=np.float32)
         self.current_weights[-1] = 1.0  # Start with 100% cash
+        
+        # Phase 5.6 Sprint 1: Initialize peak equity to initial capital
+        self.peak_equity = float(initial_cash)
         
         # Phase 5.6 Sprint 1: Initialize peak equity to initial capital
         self.peak_equity = float(initial_cash)
@@ -309,6 +315,9 @@ class FastCryptoEnv(gym.Env):
         # Phase 5.5: Track previous weights for turnover calculation
         self.prev_weights = self.current_weights.copy()
         
+        # Phase 5.6 Sprint 1: Reset peak equity to initial capital
+        self.peak_equity = float(self.initial_cash)
+        
         observation = self._get_observation()
         info = {
             'portfolio_value': float(self.portfolio_value),
@@ -392,29 +401,39 @@ class FastCryptoEnv(gym.Env):
         # Update portfolio value (using net return after fees)
         self.portfolio_value *= (1.0 + net_portfolio_return)
         
+        # Phase 5.6 Sprint 1: Update peak equity (high water mark)
+        # Peak equity can only increase, never decrease
+        self.peak_equity = max(self.peak_equity, float(self.portfolio_value))
+        
         # Track returns history (use net return for reward calculation)
         self.returns_history.append(net_portfolio_return)
         
         # Store current weights for next step's turnover calculation
         self.prev_weights = weights.copy()
         
-        # Calculate reward (using net return after fees)
-        if len(self.returns_history) < self.lookback_window:
-            reward = float(net_portfolio_return)
+        # Phase 5.6 Sprint 1: Calculate Composite Reward (Fortress Brain)
+        # Formula: R_total = r_t - (w1 * downside) - (w2 * drawdown^2)
+        
+        # 1. Return component (r_t) - The Gas
+        r_t = float(net_portfolio_return)
+        
+        # 2. Sortino Penalty (The Brakes) - Penalize only negative returns
+        downside_penalty = abs(r_t) if r_t < 0 else 0.0
+        
+        # 3. Calmar Penalty (The Airbag) - Quadratic penalty on drawdown
+        # Calculate current drawdown from peak equity
+        if self.peak_equity > 1e-8:  # Avoid division by zero
+            current_drawdown = (self.peak_equity - float(self.portfolio_value)) / self.peak_equity
+            # Ensure drawdown is non-negative (should never be negative, but safety check)
+            current_drawdown = max(0.0, current_drawdown)
         else:
-            # Calculate Sortino Ratio (on net returns after fees)
-            returns_array = np.array(list(self.returns_history), dtype=np.float32)
-            mean_return = np.mean(returns_array)
-            
-            # Downside deviation
-            downside_returns = returns_array[returns_array < 0]
-            
-            if len(downside_returns) > 0 and np.std(downside_returns) > 1e-8:
-                downside_dev = np.std(downside_returns)
-                sortino_ratio = mean_return / downside_dev
-                reward = float(sortino_ratio)
-            else:
-                reward = float(mean_return)
+            current_drawdown = 0.0
+        
+        # Quadratic penalty: 10% drawdown hurts 4x more than 5%
+        drawdown_penalty = current_drawdown ** 2
+        
+        # Composite Reward
+        reward = r_t - (self.sortino_coeff * downside_penalty) - (self.calmar_coeff * drawdown_penalty)
         
         # Move to next step
         self.current_step += 1
@@ -428,13 +447,20 @@ class FastCryptoEnv(gym.Env):
         
         info = {
             'portfolio_value': float(self.portfolio_value),
+            'peak_equity': float(self.peak_equity),  # Phase 5.6: High water mark
+            'current_drawdown': float(current_drawdown),  # Phase 5.6: Current drawdown percentage
             'portfolio_return': float(net_portfolio_return),  # Net return after fees
             'gross_return': float(portfolio_return),  # Gross return before fees
             'transaction_cost': float(transaction_cost),  # Fees paid this step
             'turnover': float(turnover),  # Trading activity (sum of abs weight changes)
             'step': int(self.current_step),
-            'sortino_ratio': reward if len(self.returns_history) >= self.lookback_window else None,
-            'reward_type': 'sortino_ratio' if len(self.returns_history) >= self.lookback_window else 'portfolio_return'
+            'reward_type': 'composite_fortress',  # Phase 5.6: Composite reward
+            'reward_components': {
+                'return': float(r_t),
+                'downside_penalty': float(downside_penalty),
+                'drawdown_penalty': float(drawdown_penalty),
+                'composite_reward': float(reward)
+            }
         }
         
         return observation, reward, terminated, truncated, info

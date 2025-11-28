@@ -176,7 +176,7 @@ class Econometrics:
         
         # Fill remaining NaNs with forward fill, then backward fill
         df[output_col] = df.groupby(ticker_col)[output_col].transform(
-            lambda x: x.fillna(method='ffill').fillna(method='bfill')
+            lambda x: x.ffill().bfill()
         )
         
         # If still NaN, fill with median volatility across all assets

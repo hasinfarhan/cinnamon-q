@@ -412,32 +412,25 @@ class TechnicalAnalysis:
                 # Calculate rolling correlation for this asset against benchmark
                 asset_returns = returns[ticker]
                 
-                # Use pandas rolling correlation (more efficient)
-                # This calculates rolling correlation between two series
-                rolling_corr = asset_returns.rolling(window=window).corr(benchmark_returns)
-                
-                # rolling_corr might be a Series or have issues, so calculate manually if needed
-                if isinstance(rolling_corr, pd.Series) and len(rolling_corr) == len(returns):
-                    corr_dict[ticker] = rolling_corr
-                else:
-                    # Fallback: Calculate correlation manually for rolling window
-                    corr_values = []
-                    for i in range(len(returns)):
-                        if i < window - 1:
+                # Calculate rolling correlation manually (pandas rolling.corr() doesn't work with two series)
+                # We need to compute correlation for each rolling window
+                corr_values = []
+                for i in range(len(returns)):
+                    if i < window - 1:
+                        corr_values.append(np.nan)
+                    else:
+                        # Get window of data
+                        asset_window = asset_returns.iloc[i - window + 1:i + 1]
+                        benchmark_window = benchmark_returns.iloc[i - window + 1:i + 1]
+                        
+                        # Calculate correlation
+                        if len(asset_window) < 2 or asset_window.std() == 0 or benchmark_window.std() == 0:
                             corr_values.append(np.nan)
                         else:
-                            # Get window of data
-                            asset_window = asset_returns.iloc[i - window + 1:i + 1]
-                            benchmark_window = benchmark_returns.iloc[i - window + 1:i + 1]
-                            
-                            # Calculate correlation
-                            if len(asset_window) < 2 or asset_window.std() == 0 or benchmark_window.std() == 0:
-                                corr_values.append(np.nan)
-                            else:
-                                corr = asset_window.corr(benchmark_window)
-                                corr_values.append(corr if not pd.isna(corr) else np.nan)
-                    
-                    corr_dict[ticker] = pd.Series(corr_values, index=returns.index)
+                            corr = asset_window.corr(benchmark_window)
+                            corr_values.append(corr if not pd.isna(corr) else np.nan)
+                
+                corr_dict[ticker] = pd.Series(corr_values, index=returns.index)
         
         # Convert to DataFrame and melt back to Long format
         corr_df = pd.DataFrame(corr_dict, index=returns.index)

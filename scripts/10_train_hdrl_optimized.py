@@ -61,6 +61,7 @@ def make_env_factory(data_config: dict, fee_rate: float = 0.001):
     Args:
         data_config: Data configuration dictionary from prepare_training_data()
                     Contains paths to .npy files and metadata
+                    Phase 6: Now includes 'benchmark_path' for DIR calculation
         fee_rate: Transaction fee rate (default: 0.001 = 0.1% = 10 bps)
                  Phase 5.5: Real World Environment - Fees prevent over-trading
     
@@ -70,6 +71,7 @@ def make_env_factory(data_config: dict, fee_rate: float = 0.001):
     def _init():
         # Create environment with memory-mapped data (instant load, zero-copy)
         # Phase 5.5: Include transaction fees to make agent cost-conscious
+        # Phase 6: Benchmark returns loaded from data_config['benchmark_path']
         env = FastCryptoEnv(data_config=data_config, fee_rate=fee_rate)
         return env
     return _init

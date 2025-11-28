@@ -83,6 +83,28 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
     n_assets = len(asset_list)
     
     print(f"  Found {n_steps} timestamps, {n_assets} assets")
+    
+    # Phase 6 Sprint 2: Extract BTC benchmark returns for DIR calculation
+    benchmark_ticker = 'BTC'  # Use BTC as benchmark
+    benchmark_returns = None
+    if benchmark_ticker in asset_list:
+        btc_data = df[df['ticker'] == benchmark_ticker].sort_values('timestamp')
+        if len(btc_data) > 0:
+            # Calculate returns (pct_change)
+            btc_returns = btc_data.groupby('timestamp')['close'].first().pct_change().fillna(0.0)
+            # Align with timestamps
+            benchmark_returns = np.zeros(n_steps, dtype=np.float32)
+            for i, ts in enumerate(timestamps):
+                if ts in btc_returns.index:
+                    benchmark_returns[i] = float(btc_returns[ts])
+            print(f"  ✓ Benchmark returns extracted: BTC/USD ({benchmark_returns.shape})")
+        else:
+            print(f"  ⚠ Warning: BTC data not found, DIR will use zero benchmark")
+            benchmark_returns = np.zeros(n_steps, dtype=np.float32)
+    else:
+        print(f"  ⚠ Warning: BTC not in asset list, DIR will use zero benchmark")
+        benchmark_returns = np.zeros(n_steps, dtype=np.float32)
+    
     print("  Calculating features using vectorized operations...")
     
     # Sort by ticker and timestamp for efficient groupby operations
@@ -300,12 +322,14 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
     commit_path = temp_dir / "commit_array.npy"
     utility_path = temp_dir / "utility_array.npy"
     price_path = temp_dir / "price_array.npy"
+    benchmark_path = temp_dir / "benchmark_returns.npy"  # Phase 6 Sprint 2: DIR benchmark
     
     np.save(str(returns_path), returns_array)
     np.save(str(volatility_path), volatility_array)
     np.save(str(commit_path), commit_array)
     np.save(str(utility_path), utility_array)
     np.save(str(price_path), price_array)
+    np.save(str(benchmark_path), benchmark_returns)  # Phase 6 Sprint 2: Save benchmark returns
     
     # Phase 5.5 Sprint 2: Save correlation array (only if present)
     corr_path = temp_dir / "corr_array.npy"

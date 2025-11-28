@@ -32,7 +32,8 @@ class FastCryptoEnv(gym.Env):
         data_config: Optional[Dict] = None,
         lookback_window: int = 30,
         initial_cash: float = 100000.0,
-        fee_rate: float = 0.001  # Phase 5.5 Sprint 1: Transaction fees (0.1%)
+        fee_rate: float = 0.001,  # Phase 5.5 Sprint 1: Transaction fees (0.1%)
+        benchmark_returns: Optional[np.ndarray] = None  # Phase 6 Sprint 2: DIR benchmark
     ):
         """
         Initialize the fast crypto trading environment.
@@ -57,6 +58,19 @@ class FastCryptoEnv(gym.Env):
         self.lookback_window = lookback_window
         self.initial_cash = initial_cash
         self.fee_rate = fee_rate  # Phase 5.5 Sprint 1: Transaction fees
+        
+        # Phase 6 Sprint 2: Differential Information Ratio (DIR) - Benchmark-aware reward
+        self.benchmark_returns = benchmark_returns
+        if benchmark_returns is not None:
+            self.benchmark_returns = np.array(benchmark_returns, dtype=np.float32)
+        else:
+            # Fallback: zero benchmark (no DIR penalty)
+            self.benchmark_returns = None
+        
+        # Phase 6 Sprint 2: DIR State Variables (Exponential Moving Averages)
+        self.A_t = 0.0  # Running mean of active return (First Moment)
+        self.B_t = 0.0  # Running second moment of active return (Variance)
+        self.eta = 0.01  # Learning/decay rate for EMA (small = slow adaptation)
         
         # Phase 5.6 Sprint 1: Fortress Brain - Composite Reward Coefficients
         self.sortino_coeff = 0.5  # Penalty for downside volatility

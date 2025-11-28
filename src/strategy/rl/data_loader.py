@@ -307,9 +307,13 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
     np.save(str(utility_path), utility_array)
     np.save(str(price_path), price_array)
     
-    # Phase 5.5 Sprint 2: Save correlation array
+    # Phase 5.5 Sprint 2: Save correlation array (only if present)
     corr_path = temp_dir / "corr_array.npy"
-    np.save(str(corr_path), corr_array)
+    if corr_array is not None:
+        np.save(str(corr_path), corr_array)
+    else:
+        # Create dummy array for backward compatibility (won't be used)
+        np.save(str(corr_path), np.zeros((n_steps, n_assets), dtype=np.float32))
     
     # Save TA arrays if present
     if has_ta_features:

@@ -185,7 +185,7 @@ def evaluate_model(
         data_config = prepare_training_data(data_path, temp_dir)
         
         # Use last 10% of data for evaluation (unseen)
-        env = FastCryptoEnv(data_config=data_config, fee_rate=0.001)  # Phase 5.5: Transaction fees
+        env = FastCryptoEnv(data_config=data_config, fee_rate=0.0)  # No fees for old models
         total_steps = env.n_steps
         eval_start_step = int(total_steps * (1 - EVAL_DATA_SPLIT))
         
@@ -369,7 +369,7 @@ def evaluate_benchmark(
         data_config = prepare_training_data(data_path, temp_dir)
         
         # Use last 10% of data for evaluation (unseen)
-        env = FastCryptoEnv(data_config=data_config, fee_rate=0.001)  # Phase 5.5: Transaction fees
+        env = FastCryptoEnv(data_config=data_config, fee_rate=0.0)  # No fees for old models
         total_steps = env.n_steps
         eval_start_step = int(total_steps * (1 - EVAL_DATA_SPLIT))
         

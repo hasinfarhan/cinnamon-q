@@ -67,13 +67,14 @@ class FastCryptoEnv(gym.Env):
             self.commit_array = np.load(data_config['commit_path'], mmap_mode='r')
             self.utility_array = np.load(data_config['utility_path'], mmap_mode='r')
             self.price_array = np.load(data_config['price_path'], mmap_mode='r')
-            # Phase 5.5 Sprint 2: Load correlation array
-            self.corr_array = np.load(data_config['corr_path'], mmap_mode='r')
+            # Phase 5.5 Sprint 2: Load correlation array (only if present)
+            self.has_correlation = data_config.get('has_correlation', False)
+            if self.has_correlation:
+                self.corr_array = np.load(data_config['corr_path'], mmap_mode='r')
             self.asset_list = data_config['asset_list']
             self.timestamps = data_config['timestamps']
             self.n_steps = data_config['n_steps']
             self.has_ta_features = data_config.get('has_ta_features', False)
-            # has_correlation is set above when loading corr_array
             
             # Load TA arrays if present
             if self.has_ta_features:

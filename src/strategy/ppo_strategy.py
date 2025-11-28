@@ -275,6 +275,15 @@ class PPOStrategy:
             unlock_threshold=0.10  # 10% drawdown required to unlock
         )
         print("✓ Calmar Risk Gate initialized (Circuit Breaker)")
+        
+        # Phase 7 Sprint 2: Macro Regime Gate (Regime Filter)
+        # Initialize with default thresholds (VIX 20 = Caution, VIX 30 = Panic)
+        self.macro_gate = MacroRegimeGate(
+            vix_threshold_caution=20.0,
+            vix_threshold_panic=30.0,
+            btc_symbol="BTC"
+        )
+        print("✓ Macro Regime Gate initialized (Regime Filter)")
     
     def reset_lstm_state(self):
         """

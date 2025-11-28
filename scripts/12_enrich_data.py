@@ -17,34 +17,40 @@ sys.path.insert(0, str(project_root / "src"))
 
 import pandas as pd
 from features.indicators import TechnicalAnalysis
+from features.econometrics import Econometrics
 
 
 def main():
     """Main execution function."""
     print("=" * 80)
     print("🔬 Deep Feature Engineering - Data Enrichment")
-    print("Phase 3.5: Adding Technical Analysis Indicators")
+    print("Phase 6: World-Class Upgrade - GARCH Volatility Forecasting")
     print("=" * 80)
     print()
     
     # Paths
-    # Use crypto_training_data.parquet as input (has utility_score from sentiment analysis)
-    # Fallback to crypto_deep_master.parquet if training data doesn't exist
+    # Phase 6: Use v2 as input (has TA features), output v3 (with GARCH)
+    # Fallback to crypto_training_data.parquet if v2 doesn't exist
+    v2_data_path = project_root / "data" / "processed" / "crypto_deep_v2.parquet"
     training_data_path = project_root / "data" / "processed" / "crypto_training_data.parquet"
     master_data_path = project_root / "data" / "processed" / "crypto_deep_master.parquet"
-    output_path = project_root / "data" / "processed" / "crypto_deep_v2.parquet"
+    output_path = project_root / "data" / "processed" / "crypto_deep_v3.parquet"  # Phase 6: v3 with GARCH
     
     # Step 1: Load existing data
     print("Step 1: Loading existing data...")
-    if training_data_path.exists():
+    # Phase 6: Prefer v2 (has TA features), fallback to v1
+    if v2_data_path.exists():
+        input_path = v2_data_path
+        print(f"  ✓ Using crypto_deep_v2.parquet (includes TA features)")
+    elif training_data_path.exists():
         input_path = training_data_path
-        print(f"  ✓ Using crypto_training_data.parquet (includes sentiment/utility_score)")
+        print(f"  ⚠ Using crypto_training_data.parquet (no TA features - will add them)")
     elif master_data_path.exists():
         input_path = master_data_path
         print(f"  ⚠ Using crypto_deep_master.parquet (no utility_score - will use neutral 0.5)")
     else:
         raise FileNotFoundError(
-            f"Input file not found: {training_data_path} or {master_data_path}\n"
+            f"Input file not found: {v2_data_path}, {training_data_path}, or {master_data_path}\n"
             "Please run scripts/08_fetch_crypto_deep.py and scripts/09_generate_sentiment.py first."
         )
     
@@ -81,6 +87,29 @@ def main():
     print("Step 3.5: Adding correlation features (rolling correlation to BTC)...")
     print("  This helps the AI identify hedging assets (like PAXG) that decouple from BTC.")
     df_enriched = ta.add_correlation(df_enriched, benchmark_ticker='BTC', window=96)
+    print()
+    
+    # Step 3.6: Add GARCH volatility forecasts (Phase 6 Sprint 1: The Oracle)
+    print("Step 3.6: Adding GARCH volatility forecasts (predictive risk)...")
+    print("  This gives the AI predictive volatility features (not just historical).")
+    print("  ⚠ This may take 10-30 minutes depending on dataset size...")
+    try:
+        econometrics = Econometrics(rolling_window=1000)
+        df_enriched = econometrics.add_volatility_forecast(
+            df_enriched,
+            ticker_col='ticker',
+            price_col='close',
+            output_col='garch_volatility'
+        )
+        print("  ✓ GARCH volatility forecasts added")
+    except ImportError as e:
+        print(f"  ✗ GARCH features skipped: {e}")
+        print("  Install with: pip install arch")
+        df_enriched['garch_volatility'] = df_enriched.get('volatility', 0.0)  # Fallback to regular volatility
+    except Exception as e:
+        print(f"  ✗ GARCH calculation failed: {e}")
+        print("  Using fallback: regular volatility")
+        df_enriched['garch_volatility'] = df_enriched.get('volatility', 0.0)
     print()
     
     # Step 4: Verify new columns
@@ -152,9 +181,9 @@ def main():
     print("=" * 80)
     print()
     print("Next steps:")
-    print("  1. Review the enriched data: data/processed/crypto_deep_v2.parquet")
-    print("  2. Update training scripts to use the new features")
-    print("  3. Retrain the model with enriched features (v2.0 training run)")
+    print(f"  1. Review the enriched data: {output_path}")
+    print("  2. Update training scripts to use crypto_deep_v3.parquet")
+    print("  3. Retrain the model with GARCH features (Phase 6 training run)")
     print()
 
 

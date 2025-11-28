@@ -55,6 +55,15 @@ DATA_PATH = project_root / "data" / "processed" / "crypto_training_data.parquet"
 EVAL_DATA_SPLIT = 0.1  # Use last 10% of data for evaluation (unseen)
 N_EPISODES = 5  # Number of evaluation episodes per model
 
+# Fee rate configuration
+# CRITICAL: Match the fee_rate used during training!
+# - Old models (trained before Phase 5.5 Sprint 1, Nov 27, 2025): 0.0 (no fees)
+# - New models (trained after Phase 5.5 Sprint 1): 0.001 (0.1% fees)
+# 
+# To check: Look at model file modification date or training logs
+# After retraining with fees, change this to 0.001
+FEE_RATE = 0.0  # Change to 0.001 after retraining models with fees
+
 
 # ============================================================================
 # Evaluation Functions
@@ -185,7 +194,8 @@ def evaluate_model(
         data_config = prepare_training_data(data_path, temp_dir)
         
         # Use last 10% of data for evaluation (unseen)
-        env = FastCryptoEnv(data_config=data_config, fee_rate=0.0)  # No fees for old models
+        # FEE_RATE must match training environment to avoid training/serving skew
+        env = FastCryptoEnv(data_config=data_config, fee_rate=FEE_RATE)
         total_steps = env.n_steps
         eval_start_step = int(total_steps * (1 - EVAL_DATA_SPLIT))
         
@@ -369,7 +379,8 @@ def evaluate_benchmark(
         data_config = prepare_training_data(data_path, temp_dir)
         
         # Use last 10% of data for evaluation (unseen)
-        env = FastCryptoEnv(data_config=data_config, fee_rate=0.0)  # No fees for old models
+        # FEE_RATE must match training environment to avoid training/serving skew
+        env = FastCryptoEnv(data_config=data_config, fee_rate=FEE_RATE)
         total_steps = env.n_steps
         eval_start_step = int(total_steps * (1 - EVAL_DATA_SPLIT))
         

@@ -115,10 +115,12 @@ def main():
     
     # Super Brain models go to separate directory (won't overwrite production)
     # If v2 exists, this is Super Brain (LSTM + TA), otherwise regular LSTM
+    # Phase 5.6: Fortress Brain - Save to new directory to compare with Super Brain
     if v2_data_path.exists():
-        model_dir = project_root / "models" / "hdrl_super_brain"
-        log_dir = project_root / "logs" / "hdrl_training_super_brain"
-        print("  🧠 Super Brain mode: Training with TA features!")
+        model_dir = project_root / "models" / "hdrl_fortress_v1"
+        log_dir = project_root / "logs" / "hdrl_training_fortress_v1"
+        print("  🛡️ Fortress Brain mode: Training with TA features + Composite Reward!")
+        print("  📁 Model directory: models/hdrl_fortress_v1 (separate from Super Brain)")
     else:
         model_dir = project_root / "models" / "hdrl_lstm"
         log_dir = project_root / "logs" / "hdrl_training_lstm"

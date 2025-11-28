@@ -236,7 +236,8 @@ class BotOrchestrator:
                 vec_norm_path=vec_norm_path,
                 data_path=data_path,
                 provider=self.trading_engine.provider,  # Enable live data fetching
-                optimizer_config=optimizer_config  # Bicameral Brain optimizer config
+                optimizer_config=optimizer_config,  # Bicameral Brain optimizer config
+                trading_engine=self.trading_engine  # Phase 5.6: For Calmar Gate
             )
         
         # Handle traditional StrategyEngine (momentum, etc.)

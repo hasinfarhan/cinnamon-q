@@ -8,6 +8,10 @@ Philosophy: "The AI is probabilistic (it might avoid risk). The Validator is det
 """
 
 from .risk import CalmarRiskGate
+from .macro import MacroRegimeGate
 
-__all__ = ["CalmarRiskGate"]
+__all__ = [
+    "CalmarRiskGate",
+    "MacroRegimeGate"
+]
 

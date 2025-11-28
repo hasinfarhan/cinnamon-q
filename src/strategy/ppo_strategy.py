@@ -669,16 +669,25 @@ class PPOStrategy:
             if self.trading_engine is not None:
                 try:
                     current_state = self.trading_engine.get_portfolio_state()
-                    final_target = self.risk_gate.validate(raw_target, current_state)
-                    if final_target != raw_target:
+                    calmar_target = self.risk_gate.validate(raw_target, current_state)
+                    if calmar_target != raw_target:
                         print(f"  🛡️ Calmar Gate: Override to 100% cash (drawdown protection)")
+                        raw_target = calmar_target
                 except Exception as e:
-                    # If gate validation fails, log warning but return raw target
+                    # If gate validation fails, log warning but continue
                     import logging
-                    logging.warning(f"⚠ Calmar Gate validation failed: {e}. Using raw target.")
-                    final_target = raw_target
-            else:
-                # No trading engine available, skip gate validation
+                    logging.warning(f"⚠ Calmar Gate validation failed: {e}. Continuing with raw target.")
+            
+            # Phase 7 Sprint 2: Apply Macro Regime Gate (Regime Filter)
+            # If market regime is BEAR/CRASH or CAUTION, override allocation
+            try:
+                final_target = self.macro_gate.validate(raw_target, df)
+                if final_target != raw_target:
+                    print(f"  🌍 Macro Gate: Regime-based override applied")
+            except Exception as e:
+                # If macro gate validation fails, log warning but continue with raw target
+                import logging
+                logging.warning(f"⚠ Macro Gate validation failed: {e}. Using raw target.")
                 final_target = raw_target
             
             return final_target

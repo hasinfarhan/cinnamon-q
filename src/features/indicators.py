@@ -445,11 +445,18 @@ class TechnicalAnalysis:
         )
         
         # Merge back into original DataFrame
+        # Use suffixes to handle any potential conflicts, but we already dropped corr_btc
         df_enriched = df_enriched.merge(
             corr_long,
             on=['timestamp', 'ticker'],
-            how='left'
+            how='left',
+            suffixes=('', '_new')
         )
+        
+        # If merge created a _new column, use it and drop the old one
+        if 'corr_btc_new' in df_enriched.columns:
+            df_enriched['corr_btc'] = df_enriched['corr_btc_new']
+            df_enriched = df_enriched.drop(columns=['corr_btc_new'])
         
         # Ensure corr_btc column exists (in case merge didn't create it)
         if 'corr_btc' not in df_enriched.columns:

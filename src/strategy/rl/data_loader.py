@@ -65,6 +65,9 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
     # Phase 5.5 Sprint 2: Check if correlation feature is present
     has_correlation = 'corr_btc' in df.columns
     
+    # Phase 6 Sprint 1: Check if GARCH volatility feature is present
+    has_garch = 'garch_volatility' in df.columns
+    
     if has_ta_features:
         print("  ✓ Technical Analysis features detected (RSI, MACD, BBW, ATR, SMA Ratio)")
     else:
@@ -75,6 +78,11 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
         print("  ✓ Correlation feature detected (corr_btc - rolling correlation to BTC)")
     else:
         print("  ⚠ Correlation feature not found. Run scripts/12_enrich_data.py to add it.")
+    
+    if has_garch:
+        print("  ✓ GARCH volatility feature detected (predictive risk - Phase 6)")
+    else:
+        print("  ⚠ GARCH volatility not found. Run scripts/12_enrich_data.py to add it.")
     
     # Get unique assets and timestamps
     asset_list = sorted(df['ticker'].unique().tolist())
@@ -184,6 +192,25 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
         # SMA_200_RATIO: Already a ratio, just ensure valid
         df['SMA_200_RATIO'] = df['SMA_200_RATIO'].fillna(1.0).clip(0.0, 2.0)  # Allow up to 2x
     
+    # Phase 6 Sprint 1: Normalize GARCH volatility if present (per asset, vectorized)
+    # GARCH volatility is already in a reasonable range (typically 0.001-0.1), but normalize per asset
+    if has_garch:
+        # Normalize GARCH volatility per asset (min-max scaling)
+        garch_min = df.groupby('ticker')['garch_volatility'].transform('min')
+        garch_max = df.groupby('ticker')['garch_volatility'].transform('max')
+        garch_range = garch_max - garch_min
+        df['garch_volatility_norm'] = pd.Series(
+            np.where(
+                garch_range > 0,
+                (df['garch_volatility'] - garch_min) / garch_range,
+                0.5  # Default if no range
+            ),
+            index=df.index
+        ).fillna(0.5).clip(0.0, 1.0)
+    else:
+        # Default to 0.5 (neutral volatility) if not available
+        df['garch_volatility_norm'] = 0.5
+    
     print("  Pivoting data to wide format (vectorized reshape)...")
     
     # VECTORIZED Pivot: Convert from long format to wide format
@@ -207,6 +234,12 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
         else:
             corr_pivot = None  # Don't create if not present
         
+        # Phase 6 Sprint 1: Pivot GARCH volatility if present
+        if has_garch:
+            garch_pivot = df.pivot(index='timestamp', columns='ticker', values='garch_volatility_norm')
+        else:
+            garch_pivot = None  # Don't create if not present
+        
         # Pivot TA features if present
         if has_ta_features:
             rsi_pivot = df.pivot(index='timestamp', columns='ticker', values='RSI_14_norm')
@@ -228,6 +261,12 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
             corr_pivot = df.pivot_table(index='timestamp', columns='ticker', values='corr_btc_norm', aggfunc='first')
         else:
             corr_pivot = None  # Don't create if not present
+        
+        # Phase 6 Sprint 1: Pivot GARCH volatility if present
+        if has_garch:
+            garch_pivot = df.pivot_table(index='timestamp', columns='ticker', values='garch_volatility_norm', aggfunc='first')
+        else:
+            garch_pivot = None  # Don't create if not present
         
         if has_ta_features:
             rsi_pivot = df.pivot_table(index='timestamp', columns='ticker', values='RSI_14_norm', aggfunc='first')
@@ -263,6 +302,11 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
         corr_pivot = corr_pivot.reindex(index=common_index, columns=common_columns)
         corr_pivot = corr_pivot.ffill().fillna(0.5)  # Neutral correlation = 0.5 (maps to corr=0)
     
+    # Phase 6 Sprint 1: Reindex GARCH volatility if present
+    if has_garch and garch_pivot is not None:
+        garch_pivot = garch_pivot.reindex(index=common_index, columns=common_columns)
+        garch_pivot = garch_pivot.ffill().fillna(0.5)  # Neutral volatility = 0.5
+    
     # Reindex TA features if present
     if has_ta_features:
         rsi_pivot = rsi_pivot.reindex(index=common_index, columns=common_columns)
@@ -294,6 +338,13 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
     else:
         # Don't create array if correlation not present (backward compatibility)
         corr_array = None
+    
+    # Phase 6 Sprint 1: Convert GARCH volatility array if present
+    if has_garch and garch_pivot is not None:
+        garch_array = garch_pivot.values.astype(np.float32)
+    else:
+        # Don't create array if GARCH not present (backward compatibility)
+        garch_array = None
     
     # Convert TA arrays if present
     if has_ta_features:
@@ -339,6 +390,14 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
         # Create dummy array for backward compatibility (won't be used)
         np.save(str(corr_path), np.zeros((n_steps, n_assets), dtype=np.float32))
     
+    # Phase 6 Sprint 1: Save GARCH volatility array (only if present)
+    garch_path = temp_dir / "garch_array.npy"
+    if garch_array is not None:
+        np.save(str(garch_path), garch_array)
+    else:
+        # Create dummy array for backward compatibility (won't be used)
+        np.save(str(garch_path), np.full((n_steps, n_assets), 0.5, dtype=np.float32))
+    
     # Save TA arrays if present
     if has_ta_features:
         rsi_path = temp_dir / "rsi_array.npy"
@@ -363,6 +422,8 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
     )
     if corr_array is not None:
         total_bytes += corr_array.nbytes  # Phase 5.5 Sprint 2: Correlation feature
+    if garch_array is not None:
+        total_bytes += garch_array.nbytes  # Phase 6 Sprint 1: GARCH volatility feature
     if has_ta_features:
         total_bytes += (
             rsi_array.nbytes +
@@ -384,12 +445,15 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
         'utility_path': str(utility_path),
         'price_path': str(price_path),
         'corr_path': str(corr_path),  # Phase 5.5 Sprint 2: Correlation feature
+        'garch_path': str(garch_path),  # Phase 6 Sprint 1: GARCH volatility feature
+        'benchmark_path': str(benchmark_path),  # Phase 6 Sprint 2: DIR benchmark returns
         'asset_list': asset_list,
         'timestamps': timestamps,
         'n_steps': n_steps,
         'n_assets': n_assets,
         'has_ta_features': has_ta_features,  # CRITICAL: Include this flag!
-        'has_correlation': has_correlation  # Phase 5.5 Sprint 2: Correlation flag
+        'has_correlation': has_correlation,  # Phase 5.5 Sprint 2: Correlation flag
+        'has_garch': has_garch  # Phase 6 Sprint 1: GARCH volatility flag
     }
     
     # Add TA paths if present

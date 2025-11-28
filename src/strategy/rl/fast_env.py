@@ -93,6 +93,11 @@ class FastCryptoEnv(gym.Env):
             if self.has_correlation:
                 self.corr_array = np.load(data_config['corr_path'], mmap_mode='r')
             
+            # Phase 6 Sprint 1: Load GARCH volatility array (only if present)
+            self.has_garch = data_config.get('has_garch', False)
+            if self.has_garch:
+                self.garch_array = np.load(data_config['garch_path'], mmap_mode='r')
+            
             # Phase 6 Sprint 2: Load benchmark returns for DIR calculation
             if 'benchmark_path' in data_config:
                 benchmark_array = np.load(data_config['benchmark_path'], mmap_mode='r')
@@ -153,10 +158,16 @@ class FastCryptoEnv(gym.Env):
         # TA features per asset (if present): [RSI, MACD, BBW, ATR, SMA_RATIO] = 5
         # Plus: portfolio_value_norm, cash_weight = 2
         
-        # Backward compatibility: Use 4 base features if correlation not present
-        # This allows old models (trained with 70 features) to work with new code
+        # Backward compatibility: Dynamically calculate base features
+        # Base features: returns, volatility, commit_count, utility_score
+        # Optional: corr_btc (Phase 5.5), garch_volatility (Phase 6)
         has_corr = hasattr(self, 'has_correlation') and self.has_correlation
-        base_features_per_asset = 5 if has_corr else 4  # 5 if correlation present, 4 otherwise
+        has_garch = hasattr(self, 'has_garch') and self.has_garch
+        base_features_per_asset = 4  # Always: returns, volatility, commit_count, utility_score
+        if has_corr:
+            base_features_per_asset += 1  # Add correlation
+        if has_garch:
+            base_features_per_asset += 1  # Add GARCH volatility
         ta_features_per_asset = 5 if (hasattr(self, 'has_ta_features') and self.has_ta_features) else 0
         n_features_per_asset = base_features_per_asset + ta_features_per_asset
         n_obs_features = (self.n_assets * n_features_per_asset) + 2
@@ -170,11 +181,17 @@ class FastCryptoEnv(gym.Env):
             dtype=np.float32
         )
         
-        corr_info = " (includes corr_btc)" if (hasattr(self, 'has_correlation') and self.has_correlation) else ""
+        # Build feature info string
+        feature_parts = []
+        if has_corr:
+            feature_parts.append("corr")
+        if has_garch:
+            feature_parts.append("garch")
+        feature_info = f" ({', '.join(feature_parts)})" if feature_parts else ""
         if ta_features_per_asset > 0:
-            print(f"  ✓ Observation space: {n_obs_features} features ({base_features_per_asset} base{corr_info} + {ta_features_per_asset} TA per asset)")
+            print(f"  ✓ Observation space: {n_obs_features} features ({base_features_per_asset} base{feature_info} + {ta_features_per_asset} TA per asset)")
         else:
-            print(f"  ✓ Observation space: {n_obs_features} features ({base_features_per_asset} base{corr_info} per asset, no TA)")
+            print(f"  ✓ Observation space: {n_obs_features} features ({base_features_per_asset} base{feature_info} per asset, no TA)")
         
         # Initialize episode state
         self.current_step = 0
@@ -295,6 +312,12 @@ class FastCryptoEnv(gym.Env):
             if has_corr:
                 obs[idx] = self.corr_array[self.current_step, asset_idx] if hasattr(self, 'corr_array') else 0.5
                 idx += 1  # Add correlation feature
+            
+            # Phase 6 Sprint 1: GARCH volatility feature (optional, for backward compatibility)
+            has_garch = hasattr(self, 'has_garch') and self.has_garch
+            if has_garch:
+                obs[idx] = self.garch_array[self.current_step, asset_idx] if hasattr(self, 'garch_array') else 0.5
+                idx += 1  # Add GARCH volatility feature
             
             # TA features (if present)
             if has_ta:

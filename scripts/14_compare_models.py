@@ -213,12 +213,21 @@ def evaluate_model(
             if not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
                 df['timestamp'] = pd.to_datetime(df['timestamp'])
             
+            # Check if timestamp is timezone-aware
+            is_tz_aware = df['timestamp'].dtype.tz is not None
+            
             # Filter by date range
             if start_date:
                 start_dt = pd.to_datetime(start_date)
+                # Make timezone-aware if DataFrame timestamps are timezone-aware
+                if is_tz_aware:
+                    start_dt = start_dt.tz_localize('UTC') if start_dt.tz is None else start_dt
                 df = df[df['timestamp'] >= start_dt]
             if end_date:
                 end_dt = pd.to_datetime(end_date)
+                # Make timezone-aware if DataFrame timestamps are timezone-aware
+                if is_tz_aware:
+                    end_dt = end_dt.tz_localize('UTC') if end_dt.tz is None else end_dt
                 df = df[df['timestamp'] <= end_dt]
             
             if df.empty:
@@ -433,12 +442,21 @@ def evaluate_benchmark(
             if not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
                 df['timestamp'] = pd.to_datetime(df['timestamp'])
             
+            # Check if timestamp is timezone-aware
+            is_tz_aware = df['timestamp'].dtype.tz is not None
+            
             # Filter by date range
             if start_date:
                 start_dt = pd.to_datetime(start_date)
+                # Make timezone-aware if DataFrame timestamps are timezone-aware
+                if is_tz_aware:
+                    start_dt = start_dt.tz_localize('UTC') if start_dt.tz is None else start_dt
                 df = df[df['timestamp'] >= start_dt]
             if end_date:
                 end_dt = pd.to_datetime(end_date)
+                # Make timezone-aware if DataFrame timestamps are timezone-aware
+                if is_tz_aware:
+                    end_dt = end_dt.tz_localize('UTC') if end_dt.tz is None else end_dt
                 df = df[df['timestamp'] <= end_dt]
             
             if df.empty:

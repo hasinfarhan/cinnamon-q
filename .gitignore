@@ -139,6 +139,12 @@ dmypy.json
 *.hdf5
 *.pkl
 *.pickle
+*.npy  # NumPy arrays (embeddings, large arrays)
+*.npz  # NumPy compressed arrays
+
+# Data directories (ignore processed data, keep raw configs)
+data/processed/
+!data/processed/.gitkeep  # Allow .gitkeep if exists
 
 # Model files (too large for git, use artifact storage)
 *.joblib

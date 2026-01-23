@@ -166,35 +166,44 @@ The agent operates under \alert{constrained optimization}:
 \begin{frame}{Engineering Architecture}
 \begin{center}
 \begin{tikzpicture}[
-    node distance=1.5cm,
-    block/.style={rectangle, draw, fill=primary!20, text width=3cm, text centered, rounded corners, minimum height=1cm},
-    arrow/.style={->, >=stealth, thick}
+    node distance=1.2cm,
+    block/.style={rectangle, draw, fill=primary!20, text width=2.8cm, text centered, rounded corners, minimum height=1.2cm, font=\small},
+    arrow/.style={->, >=stealth, thick},
+    label/.style={font=\tiny, color=gray}
 ]
-    % Nodes
-    \node [block] (data) {Data Lake\\Multi-Modal};
-    \node [block, right of=data, xshift=1cm] (features) {Feature\\Engineering};
-    \node [block, right of=features, xshift=1cm] (policy) {Hierarchical\\Policy};
-    \node [block, right of=policy, xshift=1cm] (exec) {Execution\\Engine};
+    % Data Layer
+    \node [block, fill=accent!20] (data) {Data Lake\\\tiny Multi-Modal};
+    \node [label, below of=data, yshift=0.3cm] {\tiny Price, Fundamentals,\\Sentiment, Macro};
     
-    % Arrows
-    \draw [arrow] (data) -- (features);
-    \draw [arrow] (features) -- (policy);
-    \draw [arrow] (policy) -- (exec);
+    % Feature Engineering
+    \node [block, right of=data, xshift=1.5cm] (features) {Feature\\Engineering};
+    \node [label, below of=features, yshift=0.3cm] {\tiny GARCH, FinBERT,\\Correlation};
     
-    % Labels
-    \node [below of=features, yshift=0.5cm] {\small GARCH, FinBERT, Macro};
-    \node [below of=policy, yshift=0.5cm] {\small LSTM + Regime Gate};
+    % Hierarchical Policy
+    \node [block, right of=features, xshift=1.5cm, fill=secondary!20] (policy) {Hierarchical\\Policy};
+    \node [label, below of=policy, yshift=0.3cm] {\tiny System 1: LSTM\\System 2: Regime Gate};
+    
+    % Execution
+    \node [block, right of=policy, xshift=1.5cm] (exec) {Execution\\Engine};
+    \node [label, below of=exec, yshift=0.3cm] {\tiny Portfolio\\Allocation};
+    
+    % Arrows with labels
+    \draw [arrow] (data) -- node[above, font=\tiny, sloped] {105K timesteps} (features);
+    \draw [arrow] (features) -- node[above, font=\tiny, sloped] {11 features/asset} (policy);
+    \draw [arrow] (policy) -- node[above, font=\tiny, sloped] {Weights} (exec);
+    
+    % Feedback loop (optional, subtle)
+    \draw [arrow, dashed, color=gray!50] (exec) to[out=270, in=270, looseness=1.5] node[below, font=\tiny] {Performance} (data);
 \end{tikzpicture}
 \end{center}
 
-\vspace{0.5cm}
+\vspace{0.4cm}
 
-\begin{block}{Economic Significance of Infrastructure}
+\begin{block}{Economic Significance}
 \begin{itemize}
-    \item \textbf{High-Throughput Training:} Simulate 10 years of market data (105,088 timesteps) in $\sim$6 hours
-    \item \textbf{Statistical Significance:} Enables robust backtesting across multiple market regimes (Bear 2022, Bull 2023-24, Sideways 2023)
-    \item \textbf{Automated Model Selection:} ``Challenger Protocol'' ensures continuous adaptation without manual intervention
-    \item \textbf{Result:} Infrastructure supports \alert{empirical validation} of economic hypotheses at scale
+    \item \textbf{Statistical Power:} 10 years of market data (105,088 timesteps) in $\sim$6 hours enables \alert{robust backtesting} across regimes
+    \item \textbf{Empirical Validation:} Infrastructure supports testing economic hypotheses (tail-risk truncation, regime adaptation) at scale
+    \item \textbf{Continuous Learning:} Automated model selection ensures adaptation to structural breaks without manual intervention
 \end{itemize}
 \end{block}
 \end{frame}
@@ -398,6 +407,24 @@ Trend Following & 0.0306 & 0.0243 & 1.28\% & -38.60\% \\
 % ============================================================================
 
 \appendix
+
+\begin{frame}{Speaker Notes: Key Slides}
+\begin{block}{Slide 4: The Constraints}
+\textit{``I am imposing constraints that mimic a 'Quality Factor' strategy. By structurally removing leverage and derivatives, I am testing if we can truncate the left-tail risk—essentially preventing the agent from participating in the liquidation cascades that define crypto crashes.''}
+\end{block}
+
+\vspace{0.3cm}
+
+\begin{block}{Slide 7: The Math}
+\textit{``Standard Sharpe Ratios fail in crypto because returns are non-normal. I derived this Differential Information Ratio (Eq 2) which includes a quadratic penalty for Drawdown (Eq 1). This forces the agent to optimize for survival, not just mean return.''}
+\end{block}
+
+\vspace{0.3cm}
+
+\begin{block}{Slide 9: The Results}
+\textit{``The 'Static Buy \& Hold' strategy lost 47\% in the Bear regime. While the final numbers for the Hierarchical Agent are processing, early convergence logs suggest it successfully avoided this drawdown by shifting to Cash, which validates the 'System 2' override logic.''}
+\end{block}
+\end{frame}
 
 \begin{frame}[plain]
 \begin{center}

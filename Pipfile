@@ -42,6 +42,8 @@ pyportfolioopt = "*"
 shap = "*"
 sb3-contrib = "*"
 arch = "*"
+transformers = "*"
+torch = "*"
 
 [dev-packages]
 

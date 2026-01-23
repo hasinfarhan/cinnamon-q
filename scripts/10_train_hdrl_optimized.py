@@ -18,6 +18,7 @@ import atexit
 import shutil
 import tempfile
 from pathlib import Path
+from typing import Optional
 
 # Add src to the Python path
 project_root = Path(__file__).parent.parent
@@ -38,7 +39,12 @@ from stable_baselines3.common.monitor import Monitor
 # Import environment and data loader directly to avoid dependency chain
 sys.path.insert(0, str(project_root / "src" / "strategy" / "rl"))
 from fast_env import FastCryptoEnv
+from vector_env import CryptoVectorEnv
 from data_loader import prepare_training_data
+
+# Import multimodal policy for Research Track
+sys.path.insert(0, str(project_root / "src" / "strategy" / "rl"))
+from policy import MultimodalExtractor
 
 
 def _check_tensorboard():
@@ -50,7 +56,7 @@ def _check_tensorboard():
         return False
 
 
-def make_env_factory(data_config: dict, fee_rate: float = 0.001):
+def make_env_factory(data_config: dict, fee_rate: float = 0.001, use_embeddings: bool = False, embeddings_path: Optional[Path] = None):
     """
     Factory function for creating environments with memory-mapped data.
     
@@ -64,15 +70,24 @@ def make_env_factory(data_config: dict, fee_rate: float = 0.001):
                     Phase 6: Now includes 'benchmark_path' for DIR calculation
         fee_rate: Transaction fee rate (default: 0.001 = 0.1% = 10 bps)
                  Phase 5.5: Real World Environment - Fees prevent over-trading
+        use_embeddings: Whether to use multimodal environment with embeddings (Research Track)
+        embeddings_path: Path to news_embeddings.npy file
     
     Returns:
-        Factory function that creates FastCryptoEnv instances
+        Factory function that creates FastCryptoEnv or CryptoVectorEnv instances
     """
     def _init():
-        # Create environment with memory-mapped data (instant load, zero-copy)
-        # Phase 5.5: Include transaction fees to make agent cost-conscious
-        # Phase 6: Benchmark returns loaded from data_config['benchmark_path']
-        env = FastCryptoEnv(data_config=data_config, fee_rate=fee_rate)
+        # Research Track: Use multimodal environment if embeddings are available
+        if use_embeddings and embeddings_path and embeddings_path.exists():
+            env = CryptoVectorEnv(
+                data_config=data_config,
+                embeddings_path=embeddings_path,
+                fee_rate=fee_rate,
+                benchmark_returns=data_config.get('benchmark_returns')
+            )
+        else:
+            # Standard environment (backward compatible)
+            env = FastCryptoEnv(data_config=data_config, fee_rate=fee_rate)
         return env
     return _init
 
@@ -126,12 +141,22 @@ def main():
             f"Dataset not found. Please run scripts/08_fetch_crypto_deep.py and scripts/12_enrich_data.py first."
         )
     
-    # Model directory selection based on data version
+    # Check for embeddings (Research Track)
+    embeddings_path = project_root / "data" / "processed" / "news_embeddings.npy"
+    use_embeddings = embeddings_path.exists()
+    
+    # Model directory selection based on data version and embeddings
+    # Research Track: Multimodal (embeddings) -> hdrl_multimodal_v1
     # Phase 6: World-Class Brain (v3) -> hdrl_worldclass_v1
     # Phase 5.6: Fortress Brain (v2) -> hdrl_fortress_v1
     # Phase 5.2: Super Brain (v2) -> hdrl_super_brain (legacy)
     # Phase 5.1: Regular LSTM (v1) -> hdrl_lstm
-    if v3_data_path.exists() and data_path == v3_data_path:
+    if use_embeddings:
+        model_dir = project_root / "models" / "hdrl_multimodal_v1"
+        log_dir = project_root / "logs" / "hdrl_training_multimodal_v1"
+        print("  🔤 Research Track: Multimodal Brain mode (Embeddings + Market Features)!")
+        print("  📁 Model directory: models/hdrl_multimodal_v1")
+    elif v3_data_path.exists() and data_path == v3_data_path:
         model_dir = project_root / "models" / "hdrl_worldclass_v1"
         log_dir = project_root / "logs" / "hdrl_training_worldclass_v1"
         print("  🧠 World-Class Brain mode (Phase 6): GARCH + DIR + Calmar!")
@@ -216,6 +241,15 @@ def main():
     print(f"  Device: {device}")
     print()
     
+    # Embeddings path already set above in model directory selection
+    if use_embeddings:
+        print("🔤 Research Track: Embeddings detected! Using multimodal environment.")
+        print(f"   Embeddings path: {embeddings_path}")
+    else:
+        print("⚠ Research Track: No embeddings found. Using standard environment.")
+        print("   To enable multimodal training, run: python scripts/16_generate_embeddings.py")
+    print()
+    
     # --- CREATE VECTORIZED ENVIRONMENT ---
     print("Step 2: Creating vectorized environment...")
     print(f"  Spawning {n_envs} parallel environments...")
@@ -225,8 +259,14 @@ def main():
     # Create factory function with memory-mapped data config
     # Subprocesses will load from memory-mapped files (instant, zero-copy)
     # Phase 5.5: Pass fee_rate to enforce transaction costs (prevents over-trading)
+    # Research Track: Pass embeddings for multimodal training
     fee_rate = 0.001  # 0.1% = 10 bps (standard crypto exchange fee)
-    make_env_fn = make_env_factory(data_config, fee_rate=fee_rate)
+    make_env_fn = make_env_factory(
+        data_config, 
+        fee_rate=fee_rate,
+        use_embeddings=use_embeddings,
+        embeddings_path=embeddings_path if use_embeddings else None
+    )
     
     # SubprocVecEnv = True parallelism (separate processes)
     # Each subprocess loads from memory-mapped files (zero-copy, instant access)
@@ -266,31 +306,90 @@ def main():
     # For LSTM, smaller batches are often better (memory constraints)
     batch_size = 256 if device == "cuda" else 64
     
-    # LSTM Policy: MlpLstmPolicy combines MLP layers with LSTM memory
-    # lstm_hidden_size: Size of LSTM hidden state (memory capacity)
-    # n_lstm_layers: Number of LSTM layers (stacked for deeper memory)
-    policy_kwargs = dict(
-        net_arch=dict(
-            pi=[256, 256],  # Policy network (actor) - MLP layers before LSTM
-            vf=[256, 256]   # Value network (critic) - MLP layers before LSTM
-        ),
-        activation_fn=torch.nn.ReLU,
-        lstm_hidden_size=256,  # LSTM hidden state size (memory capacity)
-        n_lstm_layers=1,       # Single LSTM layer (can increase for deeper memory)
-        enable_critic_lstm=True  # Use LSTM in value network too
-    )
-    
-    print(f"  Policy: MlpLstmPolicy (LSTM with Memory)")
-    print(f"  n_steps (sequence length): {n_steps}")
-    print(f"  batch_size: {batch_size}")
-    print(f"  MLP layers: 256x256")
-    print(f"  LSTM hidden size: {policy_kwargs['lstm_hidden_size']}")
-    print(f"  LSTM layers: {policy_kwargs['n_lstm_layers']}")
-    print(f"  Buffer size per update: {n_steps * n_envs:,} steps")
-    print()
-    
-    model = RecurrentPPO(
-        "MlpLstmPolicy",  # LSTM policy with memory
+    # Research Track: Use multimodal policy if embeddings are available
+    if use_embeddings:
+        # For multimodal observations (Dict space), we need MultiInputPolicy
+        # However, RecurrentPPO doesn't support MultiInputPolicy directly
+        # We'll use standard PPO with MultiInputPolicy for now
+        # TODO: Create custom RecurrentMultiInputPolicy for LSTM + multimodal
+        from stable_baselines3 import PPO
+        from stable_baselines3.common.policies import MultiInputPolicy
+        
+        # Get market feature dimension from observation space
+        market_dim = env.observation_space['market'].shape[0] if hasattr(env.observation_space, 'spaces') else 150
+        
+        policy_kwargs = dict(
+            features_extractor_class=MultimodalExtractor,
+            features_extractor_kwargs=dict(
+                market_dim=market_dim,
+                text_dim=768,
+                market_hidden=128,
+                text_hidden=256,
+                output_dim=64,
+                fusion_dim=128
+            ),
+            net_arch=dict(
+                pi=[256, 256],
+                vf=[256, 256]
+            ),
+            activation_fn=torch.nn.ReLU
+        )
+        
+        print(f"  Policy: MultiInputPolicy with MultimodalExtractor (Research Track)")
+        print(f"  Market features: {market_dim} dim")
+        print(f"  Text embeddings: 768 dim")
+        print(f"  Fusion: 128 dim")
+        print(f"  ⚠ Note: Using standard PPO (not RecurrentPPO) for multimodal support")
+        print(f"  n_steps (sequence length): {n_steps}")
+        print(f"  batch_size: {batch_size}")
+        print(f"  MLP layers: 256x256")
+        print(f"  Buffer size per update: {n_steps * n_envs:,} steps")
+        print()
+        
+        model = PPO(
+            MultiInputPolicy,  # Multimodal policy with text embeddings
+            env,
+            verbose=1,
+            device=device,
+            learning_rate=3e-4,
+            n_steps=n_steps,
+            batch_size=batch_size,
+            n_epochs=10,
+            gamma=0.99,
+            gae_lambda=0.95,
+            clip_range=0.2,
+            ent_coef=0.01,
+            vf_coef=0.5,
+            max_grad_norm=0.5,
+            policy_kwargs=policy_kwargs,
+            tensorboard_log=str(tensorboard_dir) if _check_tensorboard() else None
+        )
+    else:
+        # Standard LSTM Policy: MlpLstmPolicy combines MLP layers with LSTM memory
+        # lstm_hidden_size: Size of LSTM hidden state (memory capacity)
+        # n_lstm_layers: Number of LSTM layers (stacked for deeper memory)
+        policy_kwargs = dict(
+            net_arch=dict(
+                pi=[256, 256],  # Policy network (actor) - MLP layers before LSTM
+                vf=[256, 256]   # Value network (critic) - MLP layers before LSTM
+            ),
+            activation_fn=torch.nn.ReLU,
+            lstm_hidden_size=256,  # LSTM hidden state size (memory capacity)
+            n_lstm_layers=1,       # Single LSTM layer (can increase for deeper memory)
+            enable_critic_lstm=True  # Use LSTM in value network too
+        )
+        
+        print(f"  Policy: MlpLstmPolicy (LSTM with Memory)")
+        print(f"  n_steps (sequence length): {n_steps}")
+        print(f"  batch_size: {batch_size}")
+        print(f"  MLP layers: 256x256")
+        print(f"  LSTM hidden size: {policy_kwargs['lstm_hidden_size']}")
+        print(f"  LSTM layers: {policy_kwargs['n_lstm_layers']}")
+        print(f"  Buffer size per update: {n_steps * n_envs:,} steps")
+        print()
+        
+        model = RecurrentPPO(
+            "MlpLstmPolicy",  # LSTM policy with memory
         env,
         verbose=1,
         device=device,

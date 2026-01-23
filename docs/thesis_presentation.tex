@@ -189,12 +189,12 @@ The agent operates under \alert{constrained optimization}:
 
 \vspace{0.5cm}
 
-\begin{block}{Infrastructure Efficiency}
+\begin{block}{Economic Significance of Infrastructure}
 \begin{itemize}
-    \item \textbf{Memory-Mapped Data Loading:} Zero-copy access for parallel environments
-    \item \textbf{Result:} Environment initialization: 30 minutes $\rightarrow$ 3 seconds
-    \item \textbf{Training:} 16 parallel environments, GPU-optimized (RTX 4070 Ti Super)
-    \item \textbf{MLOps:} Automated ``Challenger Protocol'' for model selection
+    \item \textbf{High-Throughput Training:} Simulate 10 years of market data (105,088 timesteps) in $\sim$6 hours
+    \item \textbf{Statistical Significance:} Enables robust backtesting across multiple market regimes (Bear 2022, Bull 2023-24, Sideways 2023)
+    \item \textbf{Automated Model Selection:} ``Challenger Protocol'' ensures continuous adaptation without manual intervention
+    \item \textbf{Result:} Infrastructure supports \alert{empirical validation} of economic hypotheses at scale
 \end{itemize}
 \end{block}
 \end{frame}
@@ -279,7 +279,7 @@ B_t &= B_{t-1} + \eta \cdot (r_{\text{active}}^2 - B_{t-1}) \quad \text{(Running
 \toprule
 \textbf{Strategy} & \textbf{Sortino} & \textbf{Sharpe} & \textbf{Return} & \textbf{Max DD} \\
 \midrule
-Hierarchical Agent & \alert{TBD} & TBD & TBD & \alert{TBD} \\
+Hierarchical Agent & \alert{In Progress} & In Progress & In Progress & \alert{In Progress} \\
 Static Buy \& Hold & 0.0052 & 0.0025 & -7.35\% & -47.18\% \\
 Mean Reversion (BB) & 0.0027 & 0.0021 & 5.43\% & -11.38\% \\
 Trend Following & 0.0306 & 0.0243 & 1.28\% & -38.60\% \\
@@ -291,12 +291,12 @@ Trend Following & 0.0306 & 0.0243 & 1.28\% & -38.60\% \\
 
 \vspace{0.3cm}
 
-\begin{block}{Key Observations}
+\begin{block}{Training Convergence \& Expected Performance}
 \begin{itemize}
-    \item \textbf{Reduced Maximum Drawdown:} Hierarchical agent shows lower drawdown during volatility spikes
-    \item \textbf{Regime Adaptation:} Agent learns to shift allocation based on macro signals (VIX, BTC trend)
-    \item \textbf{Constraint Benefits:} Long-only constraint prevents liquidation cascades during flash crashes
-    \item \textbf{Pending:} Full evaluation across all regimes (comprehensive backtesting in progress)
+    \item \textbf{Training Status:} Models trained on 10M timesteps with convergence achieved (episode reward stabilized)
+    \item \textbf{Expected Advantage:} Hierarchical agent should show \alert{lower maximum drawdown} than baselines during volatility spikes
+    \item \textbf{Hypothesis:} Constraint benefits (long-only, no leverage) will truncate left-tail risk, improving Sortino Ratio
+    \item \textbf{Evaluation:} Comprehensive backtesting across all regimes in progress (results expected within 1 week)
 \end{itemize}
 \end{block}
 \end{frame}
@@ -366,27 +366,28 @@ Trend Following & 0.0306 & 0.0243 & 1.28\% & -38.60\% \\
 \end{itemize}
 \end{block}
 
-\vspace{0.5cm}
+\vspace{0.3cm}
 
-\begin{block}{Discussion Points}
+\begin{block}{Discussion Points \& Preliminary Answers}
 \begin{enumerate}
     \item \textbf{The ``Cost of Ethics'' in Utility Functions:}
     \begin{itemize}
-        \item How should constrained optimization be modeled in the reward function?
-        \item Should constraints be hard (gates) or soft (penalties)?
-        \item What is the empirical trade-off between constraint adherence and performance?
+        \item \textbf{Design Choice:} Hard constraints (gates) over soft penalties
+        \item \textbf{Rationale:} In crypto, soft penalties ($-100$) are ignored during high-volatility events when agents expect large gains ($+1000$). Hard gates enforce survival.
+        \item \textbf{Empirical Test:} Compare constrained vs. unconstrained agents on tail-risk metrics (Calmar Ratio)
     \end{itemize}
     
     \item \textbf{Regime Detection:}
     \begin{itemize}
-        \item Learned (meta-agent) vs. rule-based (VIX thresholds)?
-        \item How to balance adaptation speed with stability?
+        \item \textbf{Baseline:} Rule-based (VIX thresholds) establishes interpretable benchmark
+        \item \textbf{Hypothesis (RQ2):} Meta-agent learns implicit regimes (e.g., crypto-specific liquidity crunches) not visible in VIX alone
+        \item \textbf{Balance:} Rule-based for stability, learned for adaptation speed
     \end{itemize}
     
     \item \textbf{Evaluation Framework:}
     \begin{itemize}
-        \item Which metrics best capture ``adaptive rationality''?
-        \item How to measure regime transition performance?
+        \item \textbf{Primary Metric:} Calmar Ratio (return-to-drawdown) captures ``adaptive rationality''
+        \item \textbf{Regime Transitions:} Measure performance during structural breaks (e.g., Bull $\rightarrow$ Bear transitions)
     \end{itemize}
 \end{enumerate}
 \end{block}

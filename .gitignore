@@ -202,3 +202,14 @@ models/production/
 *.db-journal
 *.db-wal
 *.db-shm
+
+# LaTeX build artifacts
+*.aux
+*.log
+*.nav
+*.out
+*.snm
+*.toc
+*.synctex.gz
+*.fdb_latexmk
+*.fls

@@ -1,0 +1,23 @@
+CINNAMON-Q BACKTEST SUMMARY
+=================================================================
+Test period : 2025-10-12 to 2026-05-19 (219 days)
+Steps       : 21,019  (15-min bars)
+Assets      : 14 (AAVE, AVAX, BAT, BCH, BTC, CRV, ETH, GRT, LINK, LTC, SOL, SUSHI, UNI, YFI)
+Model       : RecurrentPPO LSTM, 500k training steps, Gemini LLM utility scores
+
+                          Total Return (%)  Ann. Return (%)  Sharpe Ratio  Sortino Ratio  Max Drawdown (%)  Calmar Ratio  Win Rate (%)  Final Value ($)
+Strategy                                                                                                                                               
+LSTM PPO (Ours)                      -7.00           -11.40        -0.615         -0.836            -13.34        -0.855          48.7         92999.76
+Buy-and-Hold BTC                    -32.60           -48.23        -1.100         -1.417            -47.18        -1.022          50.3         67395.63
+Equal-Weight (17 assets)            -46.81           -65.12        -1.245         -1.671            -55.35        -1.176          49.5         53190.11
+
+KEY FINDINGS:
+  Our total return   : -7.00%
+  BTC total return   : -32.60%
+  EqWt total return  : -46.81%
+
+  Our Sortino Ratio  : -0.836
+  BTC Sortino Ratio  : -1.417
+
+  Our Max Drawdown   : -13.34%
+  BTC Max Drawdown   : -47.18%

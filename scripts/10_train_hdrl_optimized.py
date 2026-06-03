@@ -105,25 +105,31 @@ def main():
     if torch.cuda.is_available():
         gpu_name = torch.cuda.get_device_name(0)
         gpu_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)
-        print(f"  ✓ GPU: {gpu_name}")
-        print(f"  ✓ GPU Memory: {gpu_memory:.1f} GB")
-        device = "cuda"
-    else:
-        print("  ⚠ No GPU detected, using CPU")
-        device = "cpu"
+        print(f"  GPU available: {gpu_name} ({gpu_memory:.1f} GB) — using CPU for stability")
+    # Force CPU: laptop GPU (RTX 3060) causes silent CUDA crashes on long training runs
+    device = "cpu"
+    print(f"  Device: CPU (stable mode)")
     
     cpu_cores = os.cpu_count()
     print(f"  ✓ CPU Cores: {cpu_cores}")
     print()
     
     # --- PATHS ---
-    # Phase 6: World-Class Brain - Prefer v3 (GARCH + TA), fallback to v2, then v1
+    # Prefer clean-rebuild v4 (14 assets, all features fixed + real Gemini scores)
+    v4_sentiment_path   = project_root / "data" / "processed" / "crypto_deep_v4_sentiment.parquet"
+    sentiment_data_path = project_root / "data" / "processed" / "crypto_deep_v3_sentiment.parquet"
     v3_data_path = project_root / "data" / "processed" / "crypto_deep_v3.parquet"
     v2_data_path = project_root / "data" / "processed" / "crypto_deep_v2.parquet"
     v1_data_path = project_root / "data" / "processed" / "crypto_training_data.parquet"
     master_data_path = project_root / "data" / "processed" / "crypto_deep_master.parquet"
-    
-    if v3_data_path.exists():
+
+    if v4_sentiment_path.exists():
+        data_path = v4_sentiment_path
+        print("✓ Using crypto_deep_v4_sentiment.parquet (14 clean assets, all features fixed) - CLEAN THESIS MODE!")
+    elif sentiment_data_path.exists():
+        data_path = sentiment_data_path
+        print("✓ Using crypto_deep_v3_sentiment.parquet (real Gemini LLM scores) - FULL THESIS MODE!")
+    elif v3_data_path.exists():
         data_path = v3_data_path
         print("✓ Using crypto_deep_v3.parquet (with GARCH + TA features) - World-Class Brain mode!")
     elif v2_data_path.exists():
@@ -154,13 +160,23 @@ def main():
     if use_embeddings:
         model_dir = project_root / "models" / "hdrl_multimodal_v1"
         log_dir = project_root / "logs" / "hdrl_training_multimodal_v1"
-        print("  🔤 Research Track: Multimodal Brain mode (Embeddings + Market Features)!")
-        print("  📁 Model directory: models/hdrl_multimodal_v1")
+        print("  Research Track: Multimodal Brain mode (Embeddings + Market Features)!")
+        print("  Model directory: models/hdrl_multimodal_v1")
+    elif v4_sentiment_path.exists() and data_path == v4_sentiment_path:
+        model_dir = project_root / "models" / "hdrl_worldclass_v8"
+        log_dir = project_root / "logs" / "hdrl_training_worldclass_v8"
+        print("  THESIS MODEL v8: rolling Sharpe reward — forces dynamic regime-aware allocation!")
+        print("  Model directory: models/hdrl_worldclass_v8")
+    elif sentiment_data_path.exists() and data_path == sentiment_data_path:
+        model_dir = project_root / "models" / "hdrl_worldclass_v2"
+        log_dir = project_root / "logs" / "hdrl_training_worldclass_v2"
+        print("  THESIS MODEL v2: Real Gemini LLM Sentiment + GARCH + TA!")
+        print("  Model directory: models/hdrl_worldclass_v2")
     elif v3_data_path.exists() and data_path == v3_data_path:
         model_dir = project_root / "models" / "hdrl_worldclass_v1"
         log_dir = project_root / "logs" / "hdrl_training_worldclass_v1"
-        print("  🧠 World-Class Brain mode (Phase 6): GARCH + DIR + Calmar!")
-        print("  📁 Model directory: models/hdrl_worldclass_v1")
+        print("  World-Class Brain mode (Phase 6): GARCH + DIR + Calmar!")
+        print("  Model directory: models/hdrl_worldclass_v1")
     elif v2_data_path.exists() and data_path == v2_data_path:
         model_dir = project_root / "models" / "hdrl_fortress_v1"
         log_dir = project_root / "logs" / "hdrl_training_fortress_v1"
@@ -232,9 +248,8 @@ def main():
         sys.exit(1)
     
     # --- PARALLELIZATION CONFIG ---
-    # Use 16 environments for 16 CPU threads (Ryzen 3700X)
-    # This allows collecting 16 steps of data in parallel
-    n_envs = min(16, cpu_cores)  # Don't exceed available cores
+    # Use DummyVecEnv with 2 envs — stable on Windows laptops
+    n_envs = 2
     
     print("⚙️  Configuration:")
     print(f"  Parallel Environments: {n_envs}")
@@ -268,12 +283,12 @@ def main():
         embeddings_path=embeddings_path if use_embeddings else None
     )
     
-    # SubprocVecEnv = True parallelism (separate processes)
-    # Each subprocess loads from memory-mapped files (zero-copy, instant access)
+    # DummyVecEnv = single-process (no subprocess crashes on Windows)
+    # Slightly slower than SubprocVecEnv but fully stable
     env = make_vec_env(
         make_env_fn,
         n_envs=n_envs,
-        vec_env_cls=SubprocVecEnv
+        vec_env_cls=DummyVecEnv
     )
     
     # VecNormalize = Essential for PPO convergence
@@ -298,13 +313,14 @@ def main():
     
     # LSTM Configuration
     # n_steps: Number of steps per environment per update
-    # For LSTM, this becomes the sequence length (temporal window)
-    # 128 steps = 128 timesteps of memory (e.g., 128 * 15min = 32 hours of history)
-    n_steps = 128  # Reduced from 2048 for LSTM (sequences are more expensive)
-    
-    # Batch Size: Must be divisible by n_steps
-    # For LSTM, smaller batches are often better (memory constraints)
-    batch_size = 256 if device == "cuda" else 64
+    # For LSTM, this becomes the BPTT sequence length (temporal window)
+    # v6: 512 steps × 15 min = 128 hours ≈ 5 trading days
+    #     Captures weekly / multi-day regime patterns (bull/bear rotation).
+    #     v5 used only 128 steps = 32 h — too short to see week-long regimes.
+    n_steps = 512  # n_steps * n_envs = 512 * 2 = 1024 buffer per update
+
+    # batch_size must divide n_steps * n_envs = 1024
+    batch_size = 256
     
     # Research Track: Use multimodal policy if embeddings are available
     if use_embeddings:
@@ -370,42 +386,46 @@ def main():
         # n_lstm_layers: Number of LSTM layers (stacked for deeper memory)
         policy_kwargs = dict(
             net_arch=dict(
-                pi=[256, 256],  # Policy network (actor) - MLP layers before LSTM
-                vf=[256, 256]   # Value network (critic) - MLP layers before LSTM
+                pi=[128, 128],  # Smaller network for CPU training
+                vf=[128, 128]
             ),
             activation_fn=torch.nn.ReLU,
-            lstm_hidden_size=256,  # LSTM hidden state size (memory capacity)
-            n_lstm_layers=1,       # Single LSTM layer (can increase for deeper memory)
-            enable_critic_lstm=True  # Use LSTM in value network too
+            lstm_hidden_size=128,  # v6: doubled from 64 — matches 146-feature obs space
+            n_lstm_layers=1,
+            enable_critic_lstm=False  # Disable critic LSTM to save compute
         )
         
         print(f"  Policy: MlpLstmPolicy (LSTM with Memory)")
-        print(f"  n_steps (sequence length): {n_steps}")
+        print(f"  n_steps (BPTT window): {n_steps} steps = {n_steps * 15 / 60:.0f} hours ≈ {n_steps * 15 / 60 / 24:.1f} days")
         print(f"  batch_size: {batch_size}")
-        print(f"  MLP layers: 256x256")
+        print(f"  MLP layers: 128x128")
         print(f"  LSTM hidden size: {policy_kwargs['lstm_hidden_size']}")
         print(f"  LSTM layers: {policy_kwargs['n_lstm_layers']}")
         print(f"  Buffer size per update: {n_steps * n_envs:,} steps")
         print()
         
+        # v7: Higher entropy coefficient — prevents the policy-collapse-to-static-allocation
+        # bug seen in v6. sb3-contrib RecurrentPPO does not support callable schedules for
+        # ent_coef (only float), so we use a fixed 0.05 (5× v6's 0.01).
+        # This keeps the policy exploring short/cash strategies throughout training.
         model = RecurrentPPO(
             "MlpLstmPolicy",  # LSTM policy with memory
-        env,
-        verbose=1,
-        device=device,
-        learning_rate=3e-4,
-        n_steps=n_steps,
-        batch_size=batch_size,
-        n_epochs=10,  # Reuse data 10 times (GPU is fast enough)
-        gamma=0.99,
-        gae_lambda=0.95,
-        clip_range=0.2,
-        ent_coef=0.01,  # Exploration bonus
-        vf_coef=0.5,    # Value function loss weight
-        max_grad_norm=0.5,
-        policy_kwargs=policy_kwargs,
-        tensorboard_log=str(tensorboard_dir) if _check_tensorboard() else None
-    )
+            env,
+            verbose=1,
+            device=device,
+            learning_rate=3e-5,
+            n_steps=n_steps,
+            batch_size=batch_size,
+            n_epochs=4,
+            gamma=0.99,
+            gae_lambda=0.95,
+            clip_range=0.2,
+            ent_coef=0.05,   # v7: 5× higher than v6 — prevents static allocation collapse
+            vf_coef=0.5,
+            max_grad_norm=0.5,
+            policy_kwargs=policy_kwargs,
+            tensorboard_log=str(tensorboard_dir) if _check_tensorboard() else None
+        )
     
     print("✓ RecurrentPPO (LSTM) agent initialized")
     print("  The brain now has MEMORY! It can learn temporal patterns.")
@@ -414,55 +434,17 @@ def main():
     # --- CALLBACKS ---
     print("Step 4: Setting up training callbacks...")
     
-    # Checkpoint callback: Save model periodically
+    # Checkpoint only — EvalCallback disabled (causes crashes on Windows laptops)
+    # save_freq must be a multiple of (n_steps * n_envs) = 256 to actually trigger
+    # 512 = every 2 rollouts (~every 2 minutes), ensures we never lose much progress
     checkpoint_callback = CheckpointCallback(
-        save_freq=100000,  # Save every 100k steps
+        save_freq=512,
         save_path=str(model_dir),
-        name_prefix="hdrl_crypto_lstm"
-    )
-    
-    # Evaluation callback: Track best model
-    # CRITICAL: Use the same memory-mapped data config to avoid slow parquet loading
-    # Create a separate eval environment (single process for consistency)
-    # Reuse the same make_env_fn factory (with fee_rate) to ensure fast initialization
-    def make_eval_env():
-        # Use the same memory-mapped data config (instant load, no parquet I/O)
-        env = FastCryptoEnv(data_config=data_config)
-        env = Monitor(env, str(log_dir / "eval"))
-        return env
-    
-    eval_env = DummyVecEnv([make_eval_env])
-    
-    # Load normalization stats if they exist, otherwise create new
-    if (log_dir / "vec_normalize.pkl").exists():
-        eval_env = VecNormalize.load(str(log_dir / "vec_normalize.pkl"), eval_env)
-        eval_env.training = False  # Disable training mode for evaluation
-    else:
-        eval_env = VecNormalize(
-            eval_env,
-            norm_obs=True,
-            norm_reward=True,
-            training=False
-        )
-    
-    # Early stopping callback: Stop if no improvement
-    stop_callback = StopTrainingOnNoModelImprovement(
-        max_no_improvement_evals=10,  # Stop if no new record after 10 checks
-        min_evals=20,  # Warmup period (evaluate at least 20 times first)
+        name_prefix="hdrl_crypto_lstm",
         verbose=1
     )
-    
-    eval_callback = EvalCallback(
-        eval_env,
-        best_model_save_path=str(model_dir / "best_model"),
-        log_path=str(log_dir / "evaluations"),
-        eval_freq=50000,  # Evaluate every 50k steps
-        deterministic=True,
-        render=False,
-        callback_on_new_best=stop_callback  # Trigger early stopping on new best
-    )
-    
-    print("✓ Callbacks configured")
+
+    print("Callbacks configured (checkpoint-only mode)")
     print()
     
     # --- TRAINING ---
@@ -475,7 +457,7 @@ def main():
     # Total timesteps: 10M for thorough training
     # With 16 parallel envs and LSTM sequences, this may take longer than MLP
     # LSTM processes sequences, so effective training is deeper
-    total_timesteps = 10_000_000
+    total_timesteps = 3_000_000  # v6: 3× deeper — 146 features + 512-step LSTM needs more passes
     
     start_time = time.time()
     
@@ -490,7 +472,7 @@ def main():
         
         model.learn(
             total_timesteps=total_timesteps,
-            callback=[checkpoint_callback, eval_callback],
+            callback=[checkpoint_callback],
             progress_bar=use_progress_bar
         )
         print()

@@ -6,7 +6,6 @@ instead of Pandas DataFrames for blazingly fast stepping. Designed for
 parallel training with SubprocVecEnv.
 """
 
-from collections import deque
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
@@ -55,7 +54,6 @@ class FastCryptoEnv(gym.Env):
         """
         super().__init__()
         
-        self.lookback_window = lookback_window
         self.initial_cash = initial_cash
         self.fee_rate = fee_rate  # Phase 5.5 Sprint 1: Transaction fees
         
@@ -97,7 +95,26 @@ class FastCryptoEnv(gym.Env):
             self.has_garch = data_config.get('has_garch', False)
             if self.has_garch:
                 self.garch_array = np.load(data_config['garch_path'], mmap_mode='r')
-            
+
+            # Macro features: VIX, DXY, TNX, macro_trend_score (global context)
+            self.has_macro = data_config.get('has_macro', False)
+            if self.has_macro and 'macro_path' in data_config:
+                self.macro_array = np.load(data_config['macro_path'], mmap_mode='r')
+            else:
+                self.has_macro = False
+
+            # v7: Multi-timeframe returns per asset (4h / 1d / 7d)
+            self.has_mtf = data_config.get('has_mtf', False)
+            if self.has_mtf:
+                self.ret_4h_array = np.load(data_config['ret_4h_path'], mmap_mode='r')
+                self.ret_1d_array = np.load(data_config['ret_1d_path'], mmap_mode='r')
+                self.ret_7d_array = np.load(data_config['ret_7d_path'], mmap_mode='r')
+
+            # v7: Crypto regime features (BTC 1d/7d return, market 7d return, BTC vs SMA200)
+            self.has_crypto_regime = 'crypto_regime_path' in data_config
+            if self.has_crypto_regime:
+                self.crypto_regime_array = np.load(data_config['crypto_regime_path'], mmap_mode='r')
+
             # Phase 6 Sprint 2: Load benchmark returns for DIR calculation
             if 'benchmark_path' in data_config:
                 benchmark_array = np.load(data_config['benchmark_path'], mmap_mode='r')
@@ -144,13 +161,18 @@ class FastCryptoEnv(gym.Env):
         
         print(f"✓ Optimized {self.n_steps} steps for {self.n_assets} assets: {self.assets}")
         
-        # Define action space: Portfolio weights (assets + cash)
+        # Action space: long/short weights for each asset + cash weight
+        # Negative weight = short position, positive = long, last element = cash [0,1]
+        # Constraint enforced in step(): sum(|asset_weights|) + cash = 1.0  (no leverage)
         self.action_space = spaces.Box(
-            low=0.0,
-            high=1.0,
-            shape=(self.n_assets + 1,),
+            low=np.array([-1.0] * self.n_assets + [0.0], dtype=np.float32),
+            high=np.array([ 1.0] * self.n_assets + [1.0], dtype=np.float32),
             dtype=np.float32
         )
+
+        # Short position borrowing cost: 3% per year → per 15-min bar
+        # Models crypto perpetual futures funding rate (typical for liquid coins)
+        self.short_borrow_rate = 0.03 / (365 * 24 * 4)
         
         # Define observation space DYNAMICALLY
         # Base features per asset: [return, volatility, commit_count_norm, utility_score] = 4
@@ -161,50 +183,64 @@ class FastCryptoEnv(gym.Env):
         # Backward compatibility: Dynamically calculate base features
         # Base features: returns, volatility, commit_count, utility_score
         # Optional: corr_btc (Phase 5.5), garch_volatility (Phase 6)
-        has_corr = hasattr(self, 'has_correlation') and self.has_correlation
-        has_garch = hasattr(self, 'has_garch') and self.has_garch
-        base_features_per_asset = 4  # Always: returns, volatility, commit_count, utility_score
-        if has_corr:
-            base_features_per_asset += 1  # Add correlation
-        if has_garch:
-            base_features_per_asset += 1  # Add GARCH volatility
-        ta_features_per_asset = 5 if (hasattr(self, 'has_ta_features') and self.has_ta_features) else 0
-        n_features_per_asset = base_features_per_asset + ta_features_per_asset
-        n_obs_features = (self.n_assets * n_features_per_asset) + 2
-        
-        self.n_features_per_asset = n_features_per_asset  # Store for observation construction
-        
+        has_corr         = hasattr(self, 'has_correlation')   and self.has_correlation
+        has_garch        = hasattr(self, 'has_garch')          and self.has_garch
+        has_macro        = hasattr(self, 'has_macro')          and self.has_macro
+        has_mtf          = hasattr(self, 'has_mtf')            and self.has_mtf
+        has_crypto_regime= hasattr(self, 'has_crypto_regime')  and self.has_crypto_regime
+
+        # Per-asset feature count
+        # base: returns(1) + commit(1) + utility(1) = 3
+        base_features_per_asset = 3
+        if has_corr:  base_features_per_asset += 1   # corr_btc
+        if has_garch: base_features_per_asset += 1   # GARCH volatility
+        ta_features_per_asset  = 5 if (hasattr(self, 'has_ta_features') and self.has_ta_features) else 0
+        mtf_features_per_asset = 3 if has_mtf else 0  # v7: ret_4h, ret_1d, ret_7d
+        n_features_per_asset   = base_features_per_asset + ta_features_per_asset + mtf_features_per_asset
+
+        # Global feature count
+        n_macro_features        = 4 if has_macro         else 0   # VIX, DXY, TNX, macro_score
+        n_crypto_regime_features= 4 if has_crypto_regime else 0   # v7: BTC1d, BTC7d, Mkt7d, SMA200
+
+        n_obs_features = (self.n_assets * n_features_per_asset) + 2 + n_macro_features + n_crypto_regime_features
+
+        self.n_features_per_asset = n_features_per_asset  # stored for obs construction
+
         self.observation_space = spaces.Box(
-            low=-np.inf,
-            high=np.inf,
+            low=-np.inf, high=np.inf,
             shape=(n_obs_features,),
             dtype=np.float32
         )
-        
+
         # Build feature info string
         feature_parts = []
-        if has_corr:
-            feature_parts.append("corr")
-        if has_garch:
-            feature_parts.append("garch")
-        feature_info = f" ({', '.join(feature_parts)})" if feature_parts else ""
-        if ta_features_per_asset > 0:
-            print(f"  ✓ Observation space: {n_obs_features} features ({base_features_per_asset} base{feature_info} + {ta_features_per_asset} TA per asset)")
-        else:
-            print(f"  ✓ Observation space: {n_obs_features} features ({base_features_per_asset} base{feature_info} per asset, no TA)")
+        if has_corr:   feature_parts.append("corr")
+        if has_garch:  feature_parts.append("garch")
+        if has_mtf:    feature_parts.append("4h/1d/7d")
+        feature_info   = f" ({', '.join(feature_parts)})" if feature_parts else ""
+        global_info    = []
+        if has_macro:          global_info.append("macro×4")
+        if has_crypto_regime:  global_info.append("crypto_regime×4")
+        global_str = " + " + " + ".join(global_info) if global_info else ""
+        print(f"  ✓ Observation space: {n_obs_features} features "
+              f"({base_features_per_asset} base{feature_info} + {ta_features_per_asset} TA per asset{global_str})"
+              f"  [v7: MTF returns + crypto regime]")
         
         # Initialize episode state
         self.current_step = 0
-        self.returns_history = deque(maxlen=lookback_window)
         self.portfolio_value = initial_cash
         self.current_weights = np.zeros(self.n_assets + 1, dtype=np.float32)
         self.current_weights[-1] = 1.0  # Start with 100% cash
-        
-        # Phase 5.6 Sprint 1: Initialize peak equity to initial capital
+
+        # Peak equity for drawdown calculation
         self.peak_equity = float(initial_cash)
-        
-        # Phase 5.6 Sprint 1: Initialize peak equity to initial capital
-        self.peak_equity = float(initial_cash)
+
+        # v8: Rolling Sharpe buffer — stores last 96 step returns (= 1 trading day)
+        # Used to compute rolling Sharpe ratio reward component.
+        # 96 bars × 15 min = 24 hours: short enough to be responsive to crashes,
+        # long enough to smooth out single-step noise.
+        self._sharpe_window = 96
+        self.return_buffer: list = []
     
     def _load_and_optimize(self):
         """
@@ -300,12 +336,12 @@ class FastCryptoEnv(gym.Env):
         has_ta = hasattr(self, 'has_ta_features') and self.has_ta_features
         
         for asset_idx in range(self.n_assets):
-            # Base features (always present)
-            obs[idx] = self.returns_array[self.current_step, asset_idx]
-            obs[idx + 1] = self.volatility_array[self.current_step, asset_idx]
-            obs[idx + 2] = self.commit_array[self.current_step, asset_idx]
-            obs[idx + 3] = self.utility_array[self.current_step, asset_idx]
-            idx += 4  # Base features: 4
+            # Base features: returns, commit_count, utility_score (3 features)
+            # NOTE: 7-bar rolling volatility dropped — GARCH below is a better signal
+            obs[idx]     = self.returns_array[self.current_step, asset_idx]
+            obs[idx + 1] = self.commit_array[self.current_step, asset_idx]
+            obs[idx + 2] = self.utility_array[self.current_step, asset_idx]
+            idx += 3
             
             # Phase 5.5 Sprint 2: Correlation feature (optional, for backward compatibility)
             has_corr = hasattr(self, 'has_correlation') and self.has_correlation
@@ -321,19 +357,36 @@ class FastCryptoEnv(gym.Env):
             
             # TA features (if present)
             if has_ta:
-                obs[idx] = self.rsi_array[self.current_step, asset_idx]
+                obs[idx]     = self.rsi_array[self.current_step, asset_idx]
                 obs[idx + 1] = self.macd_array[self.current_step, asset_idx]
                 obs[idx + 2] = self.bbw_array[self.current_step, asset_idx]
                 obs[idx + 3] = self.atr_array[self.current_step, asset_idx]
                 obs[idx + 4] = self.sma_ratio_array[self.current_step, asset_idx]
                 idx += 5
-        
-        # Add portfolio value (normalized)
-        obs[idx] = self.portfolio_value / self.initial_cash
-        
-        # Add current cash weight
+
+            # v7: Multi-timeframe returns (4h, 1d, 7d) — explicit trend signal
+            if hasattr(self, 'has_mtf') and self.has_mtf:
+                obs[idx]     = self.ret_4h_array[self.current_step, asset_idx]
+                obs[idx + 1] = self.ret_1d_array[self.current_step, asset_idx]
+                obs[idx + 2] = self.ret_7d_array[self.current_step, asset_idx]
+                idx += 3
+
+        # Add portfolio value (normalized) + cash weight
+        obs[idx]     = self.portfolio_value / self.initial_cash
         obs[idx + 1] = self.current_weights[-1]
-        
+        idx += 2
+
+        # Macro features: VIX, DXY, TNX, macro_trend_score (traditional market context)
+        if hasattr(self, 'has_macro') and self.has_macro and hasattr(self, 'macro_array'):
+            obs[idx:idx + 4] = self.macro_array[self.current_step]
+            idx += 4
+
+        # v7: Crypto regime features (BTC 1d/7d, market 7d, BTC vs SMA200)
+        # These directly signal crypto-specific bear/bull regimes the LSTM can act on
+        if hasattr(self, 'has_crypto_regime') and self.has_crypto_regime:
+            obs[idx:idx + 4] = self.crypto_regime_array[self.current_step]
+            idx += 4
+
         return obs
     
     def reset(
@@ -344,25 +397,29 @@ class FastCryptoEnv(gym.Env):
         """Reset environment to initial state."""
         super().reset(seed=seed)
         
-        # Random start to prevent overfitting (but ensure we have enough history)
+        # Random start to prevent overfitting (skip first 200 bars for TA/GARCH warmup)
+        WARMUP = 200
         if self.n_steps > 2000:
-            self.current_step = np.random.randint(
-                self.lookback_window,
-                self.n_steps - 1000
-            )
+            self.current_step = np.random.randint(WARMUP, self.n_steps - 1000)
         else:
-            self.current_step = self.lookback_window
+            self.current_step = WARMUP
         
         # Reset episode state
-        self.returns_history.clear()
         self.portfolio_value = self.initial_cash
         self.current_weights = np.zeros(self.n_assets + 1, dtype=np.float32)
         self.current_weights[-1] = 1.0
         # Phase 5.5: Track previous weights for turnover calculation
         self.prev_weights = self.current_weights.copy()
-        
+
         # Phase 5.6 Sprint 1: Reset peak equity to initial capital
         self.peak_equity = float(self.initial_cash)
+
+        # Reset DIR state — must restart per episode so EMA baseline matches new start point
+        self.A_t = 0.0
+        self.B_t = 0.0
+
+        # Reset rolling Sharpe buffer
+        self.return_buffer = []
         
         observation = self._get_observation()
         info = {
@@ -397,14 +454,24 @@ class FastCryptoEnv(gym.Env):
                 f"got {len(action)}"
             )
         
-        # Normalize action (fast numpy)
-        action = np.clip(action, 0.0, 1.0)
-        action_sum = np.sum(action)
-        if action_sum > 1e-8:
-            weights = (action / action_sum).astype(np.float32)
+        # Normalise long/short action into a valid portfolio
+        # Cash must be ≥ 0; asset weights can be negative (short)
+        # Constraint: sum(|asset_weights|) + cash_weight = 1.0  (fully collateralised, no leverage)
+        cash_raw   = float(np.clip(action[-1], 0.0, 1.0))
+        assets_raw = action[:-1].astype(np.float32)          # may contain negatives
+
+        gross = float(np.sum(np.abs(assets_raw)))
+        total = gross + cash_raw
+
+        if total > 1e-8:
+            scale        = 1.0 / total
+            asset_w      = (assets_raw * scale).astype(np.float32)
+            cash_w       = float(cash_raw * scale)
         else:
-            weights = np.zeros(self.n_assets + 1, dtype=np.float32)
-            weights[-1] = 1.0
+            asset_w      = np.zeros(self.n_assets, dtype=np.float32)
+            cash_w       = 1.0
+
+        weights = np.concatenate([asset_w, [cash_w]]).astype(np.float32)
         
         self.current_weights = weights
         
@@ -436,13 +503,16 @@ class FastCryptoEnv(gym.Env):
         else:
             portfolio_return = 0.0
         
-        # Phase 5.5: Calculate transaction costs (Real World Environment)
-        # Turnover = sum of absolute weight changes (measures trading activity)
+        # Transaction cost: fee on every weight change (long or short)
         turnover = np.sum(np.abs(weights - self.prev_weights))
         transaction_cost = turnover * self.fee_rate
-        
-        # Net portfolio return after fees
-        net_portfolio_return = portfolio_return - transaction_cost
+
+        # Short borrow cost: ongoing per-step cost for all short positions
+        short_exposure = float(np.sum(np.abs(np.minimum(weights[:-1], 0.0))))
+        short_borrow_cost = short_exposure * self.short_borrow_rate
+
+        # Net portfolio return after all costs
+        net_portfolio_return = portfolio_return - transaction_cost - short_borrow_cost
         
         # Update portfolio value (using net return after fees)
         self.portfolio_value *= (1.0 + net_portfolio_return)
@@ -451,61 +521,75 @@ class FastCryptoEnv(gym.Env):
         # Peak equity can only increase, never decrease
         self.peak_equity = max(self.peak_equity, float(self.portfolio_value))
         
-        # Track returns history (use net return for reward calculation)
-        self.returns_history.append(net_portfolio_return)
-        
         # Store current weights for next step's turnover calculation
         self.prev_weights = weights.copy()
         
-        # Phase 6 Sprint 2: Calculate Differential Information Ratio (DIR)
-        # This rewards "active return" (beating the benchmark) while maintaining Calmar penalty
-        
-        # 1. Get portfolio return (r_portfolio)
-        r_portfolio = float(net_portfolio_return)
-        
-        # 2. Get benchmark return (r_benchmark) - BTC/USD returns
+        # ── Reward: Asymmetric Risk-Adjusted Return + Rolling Sharpe (v8) ────
+        #
+        # Four components, each scaled to ~0.001/step (typical 15-min return):
+        #
+        #  1. Asymmetric portfolio return
+        #     Gains feel normal; losses sting 2.5× harder.
+        #     → Strong pressure to avoid any losing step.
+        #
+        #  2. Proactive drawdown drag (linear)
+        #     Every step underwater costs 1% of current drawdown.
+        #     → Punishes staying invested during sustained bear moves.
+        #
+        #  3. VIX-aware cash bonus
+        #     Bonus for holding cash during macro risk-off.
+        #
+        #  4. Rolling Sharpe bonus  ← KEY NEW COMPONENT (v8)
+        #     Reward = rolling Sharpe over the last 96 steps (1 trading day).
+        #     A static portfolio has a FIXED Sharpe — it cannot improve it by
+        #     doing the same thing every step.  A dynamic portfolio that goes
+        #     short during crashes raises its rolling Sharpe → higher reward.
+        #     This is the incentive the model was missing to trade dynamically.
+        #     Scale: typical Sharpe ≈ ±0.1–0.4  →  reward contribution ≈ ±0.0002–0.0008/step
+        #            (same order as the asymmetric return component)
+
+        r = float(net_portfolio_return)
+
+        # Component 1: Asymmetric return (losses ×2.5)
+        reward = r if r >= 0.0 else r * 2.5
+
+        # Component 2: Proactive drawdown drag
+        if self.peak_equity > 1e-8:
+            current_drawdown = max(0.0,
+                (self.peak_equity - float(self.portfolio_value)) / self.peak_equity)
+        else:
+            current_drawdown = 0.0
+        reward -= current_drawdown * 0.01
+
+        # Component 3: VIX-aware cash bonus
+        if hasattr(self, 'has_macro') and self.has_macro and hasattr(self, 'macro_array'):
+            macro_score = float(self.macro_array[self.current_step, 3])
+            risk_off_signal = max(0.0, 0.4 - macro_score) / 0.4
+            reward += float(self.current_weights[-1]) * risk_off_signal * 0.001
+
+        # Component 4: Rolling Sharpe bonus
+        # Update the return buffer with this step's net return
+        self.return_buffer.append(r)
+        if len(self.return_buffer) > self._sharpe_window:
+            self.return_buffer.pop(0)   # drop oldest entry (O(n) but n=96, negligible)
+
+        if len(self.return_buffer) >= 20:  # need at least 20 steps for a stable estimate
+            ret_arr   = np.array(self.return_buffer, dtype=np.float32)
+            mu        = float(ret_arr.mean())
+            sigma     = float(ret_arr.std()) + 1e-8
+            rolling_sharpe = mu / sigma   # dimensionless: positive = profitable & consistent
+            # Scale so Sharpe≈0.1 → +0.0002/step, Sharpe≈0.4 → +0.0008/step
+            # This makes it competitive with but not dominant over the step-return component
+            reward += rolling_sharpe * 0.002
+        else:
+            rolling_sharpe = 0.0
+
+        # Keep benchmark return for logging (no longer used in reward)
         if self.benchmark_returns is not None and self.current_step < len(self.benchmark_returns):
             r_benchmark = float(self.benchmark_returns[self.current_step])
         else:
-            r_benchmark = 0.0  # No benchmark = no DIR penalty
-        
-        # 3. Calculate Active Return (r_active = r_portfolio - r_benchmark)
-        r_active = r_portfolio - r_benchmark
-        
-        # 4. Update Moving Averages (Exponential Moving Average)
-        # EMA update: A_t = A_t + eta * (r_active - A_t)
-        delta = r_active - self.A_t
-        self.A_t = self.A_t + self.eta * delta
-        self.B_t = self.B_t + self.eta * (r_active**2 - self.B_t)
-        
-        # 5. Calculate Differential Ratio (D_t)
-        # Formula: D_t = (B_t * delta - 0.5 * A_t * (r_active^2 - B_t)) / (B_t - A_t^2)^1.5
-        # This measures the incremental contribution to Information Ratio
-        epsilon = 1e-8  # Safety: prevent division by zero
-        denominator = (self.B_t - self.A_t**2)**1.5
-        if abs(denominator) < epsilon:
-            # Fallback: use simple active return if denominator too small
-            D_t = r_active
-        else:
-            numerator = self.B_t * delta - 0.5 * self.A_t * (r_active**2 - self.B_t)
-            D_t = numerator / denominator
-        
-        # 6. Calmar Penalty (The Airbag) - Quadratic penalty on drawdown
-        # Calculate current drawdown from peak equity
-        if self.peak_equity > 1e-8:  # Avoid division by zero
-            current_drawdown = (self.peak_equity - float(self.portfolio_value)) / self.peak_equity
-            # Ensure drawdown is non-negative (should never be negative, but safety check)
-            current_drawdown = max(0.0, current_drawdown)
-        else:
-            current_drawdown = 0.0
-        
-        # Quadratic penalty: 10% drawdown hurts 4x more than 5%
-        drawdown_penalty = current_drawdown ** 2
-        
-        # 7. Composite Reward (Phase 6: DIR + Calmar)
-        # reward = DIR - (calmar_coeff * drawdown^2) - transaction_cost
-        # Note: Transaction cost already subtracted from r_portfolio, so we use D_t directly
-        reward = D_t - (self.calmar_coeff * drawdown_penalty)
+            r_benchmark = 0.0
+        r_active = r - r_benchmark
         
         # Move to next step
         self.current_step += 1
@@ -517,27 +601,25 @@ class FastCryptoEnv(gym.Env):
         terminated = self.current_step >= self.n_steps - 1
         truncated = False
         
+        long_exposure  = float(np.sum(np.maximum(weights[:-1], 0.0)))
         info = {
-            'portfolio_value': float(self.portfolio_value),
-            'peak_equity': float(self.peak_equity),  # Phase 5.6: High water mark
-            'current_drawdown': float(current_drawdown),  # Phase 5.6: Current drawdown percentage
-            'portfolio_return': float(net_portfolio_return),  # Net return after fees
-            'benchmark_return': float(r_benchmark),  # Phase 6: Benchmark return (BTC)
-            'active_return': float(r_active),  # Phase 6: Active return (portfolio - benchmark)
-            'gross_return': float(portfolio_return),  # Gross return before fees
-            'transaction_cost': float(transaction_cost),  # Fees paid this step
-            'turnover': float(turnover),  # Trading activity (sum of abs weight changes)
-            'step': int(self.current_step),
-            'reward_type': 'dir_calmar',  # Phase 6: DIR + Calmar composite reward
-            'reward_components': {
-                'differential_ratio': float(D_t),
-                'drawdown_penalty': float(drawdown_penalty),
-                'composite_reward': float(reward),
-                'dir_state': {
-                    'A_t': float(self.A_t),  # Running mean of active return
-                    'B_t': float(self.B_t)   # Running variance of active return
-                }
-            }
+            'portfolio_value'  : float(self.portfolio_value),
+            'peak_equity'      : float(self.peak_equity),
+            'current_drawdown' : float(current_drawdown),
+            'portfolio_return' : float(net_portfolio_return),
+            'benchmark_return' : float(r_benchmark),
+            'active_return'    : float(r_active),
+            'gross_return'     : float(portfolio_return),
+            'transaction_cost' : float(transaction_cost),
+            'short_borrow_cost': float(short_borrow_cost),
+            'turnover'         : float(turnover),
+            'long_exposure'    : long_exposure,
+            'short_exposure'   : short_exposure,
+            'cash_weight'      : float(weights[-1]),
+            'step'             : int(self.current_step),
+            'reward_type'      : 'asymmetric_rolling_sharpe',
+            'reward'           : float(reward),
+            'rolling_sharpe'   : float(rolling_sharpe) if 'rolling_sharpe' in dir() else 0.0,
         }
         
         return observation, reward, terminated, truncated, info

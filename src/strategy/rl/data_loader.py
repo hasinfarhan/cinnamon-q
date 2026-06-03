@@ -67,6 +67,10 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
     
     # Phase 6 Sprint 1: Check if GARCH volatility feature is present
     has_garch = 'garch_volatility' in df.columns
+
+    # Macro features: market-wide context (same value across all assets per timestamp)
+    MACRO_COLS = ['vix', 'dxy', 'tnx', 'macro_trend_score']
+    has_macro = all(c in df.columns for c in MACRO_COLS)
     
     if has_ta_features:
         print("  ✓ Technical Analysis features detected (RSI, MACD, BBW, ATR, SMA Ratio)")
@@ -83,6 +87,11 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
         print("  ✓ GARCH volatility feature detected (predictive risk - Phase 6)")
     else:
         print("  ⚠ GARCH volatility not found. Run scripts/12_enrich_data.py to add it.")
+
+    if has_macro:
+        print("  ✓ Macro features detected (VIX, DXY, TNX, macro_trend_score)")
+    else:
+        print("  ⚠ Macro features not found (vix/dxy/tnx/macro_trend_score). Run scripts/16_fill_macro_features.py.")
     
     # Get unique assets and timestamps
     asset_list = sorted(df['ticker'].unique().tolist())
@@ -121,7 +130,19 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
     # VECTORIZED Feature Engineering (Much faster than loops!)
     # Calculate returns per asset using groupby (vectorized)
     df['returns'] = df.groupby('ticker')['close'].pct_change().fillna(0.0)
-    
+
+    # ── Multi-timeframe cumulative returns (Problem 1 fix) ─────────────────
+    # pct_change(N) = (price[t] / price[t-N]) - 1  →  cumulative return over N bars
+    # 4h  = 16 bars × 15 min   |  1d = 96 bars  |  7d = 672 bars
+    # Normalised with tanh so large moves are compressed: ±scale → ±0.76
+    for window, col, scale in [
+        (16,  'ret_4h', 0.02),   # 4h: ±2% typical swing
+        (96,  'ret_1d', 0.05),   # 1d: ±5% typical
+        (672, 'ret_7d', 0.15),   # 7d: ±15% typical
+    ]:
+        raw = df.groupby('ticker')['close'].pct_change(periods=window).fillna(0.0)
+        df[col + '_norm'] = np.tanh(raw / scale).astype(np.float32)
+
     # Calculate volatility (rolling std) per asset using groupby (vectorized)
     df['volatility'] = df.groupby('ticker')['returns'].transform(
         lambda x: x.rolling(window=7, min_periods=1).std()
@@ -189,8 +210,9 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
         # ATR_NORM: Already normalized, just ensure valid
         df['ATR_NORM'] = df['ATR_NORM'].fillna(0.0).clip(0.0, 1.0)
         
-        # SMA_200_RATIO: Already a ratio, just ensure valid
-        df['SMA_200_RATIO'] = df['SMA_200_RATIO'].fillna(1.0).clip(0.0, 2.0)  # Allow up to 2x
+        # SMA_200_RATIO: normalize to [0, 1]. Raw value is price/SMA200 (typically 0.5–1.5).
+        # Clip to [0, 2] then divide by 2 → [0, 1]. 1.0 = at SMA, 0.5 = 2× above SMA.
+        df['SMA_200_RATIO'] = (df['SMA_200_RATIO'].fillna(1.0).clip(0.0, 2.0) / 2.0)
     
     # Phase 6 Sprint 1: Normalize GARCH volatility if present (per asset, vectorized)
     # GARCH volatility is already in a reasonable range (typically 0.001-0.1), but normalize per asset
@@ -211,6 +233,34 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
         # Default to 0.5 (neutral volatility) if not available
         df['garch_volatility_norm'] = 0.5
     
+    # ── Macro features (global context, one value per timestamp) ──────────────
+    # Extract from any ticker (all have the same value per timestamp).
+    # Normalization bounds match scripts/16_fill_macro_features.py.
+    if has_macro:
+        macro_ts = (
+            df.sort_values('timestamp')
+              .groupby('timestamp')[MACRO_COLS]
+              .first()
+              .reindex(pd.Index(timestamps, name='timestamp'))
+              .ffill()
+              .bfill()
+        )
+        VIX_LO, VIX_HI   = 10.0, 80.0
+        DXY_LO, DXY_HI   = 88.0, 115.0
+        TNX_LO, TNX_HI   =  0.5,   5.5
+
+        vix_norm   = np.clip((macro_ts['vix'].values   - VIX_LO) / (VIX_HI - VIX_LO), 0, 1)
+        dxy_norm   = np.clip((macro_ts['dxy'].values   - DXY_LO) / (DXY_HI - DXY_LO), 0, 1)
+        tnx_norm   = np.clip((macro_ts['tnx'].values   - TNX_LO) / (TNX_HI - TNX_LO), 0, 1)
+        macro_score = np.clip(macro_ts['macro_trend_score'].values, 0, 1)
+
+        # Shape: [n_steps, 4]  (VIX, DXY, TNX, macro_trend_score)
+        macro_array = np.stack([vix_norm, dxy_norm, tnx_norm, macro_score], axis=1).astype(np.float32)
+        print(f"  ✓ Macro array built: shape={macro_array.shape}  "
+              f"VIX mean={vix_norm.mean():.2f}  macro_score mean={macro_score.mean():.2f}")
+    else:
+        macro_array = None
+
     print("  Pivoting data to wide format (vectorized reshape)...")
     
     # VECTORIZED Pivot: Convert from long format to wide format
@@ -247,6 +297,11 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
             bbw_pivot = df.pivot(index='timestamp', columns='ticker', values='BB_WIDTH_norm')
             atr_pivot = df.pivot(index='timestamp', columns='ticker', values='ATR_NORM')
             sma_ratio_pivot = df.pivot(index='timestamp', columns='ticker', values='SMA_200_RATIO')
+
+        # Multi-timeframe return pivots (always present after v7)
+        ret_4h_pivot = df.pivot(index='timestamp', columns='ticker', values='ret_4h_norm')
+        ret_1d_pivot = df.pivot(index='timestamp', columns='ticker', values='ret_1d_norm')
+        ret_7d_pivot = df.pivot(index='timestamp', columns='ticker', values='ret_7d_norm')
     except ValueError:
         # Fallback to pivot_table if duplicates exist (shouldn't happen, but safe)
         print("  Warning: Duplicates detected, using pivot_table() instead")
@@ -274,6 +329,10 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
             bbw_pivot = df.pivot_table(index='timestamp', columns='ticker', values='BB_WIDTH_norm', aggfunc='first')
             atr_pivot = df.pivot_table(index='timestamp', columns='ticker', values='ATR_NORM', aggfunc='first')
             sma_ratio_pivot = df.pivot_table(index='timestamp', columns='ticker', values='SMA_200_RATIO', aggfunc='first')
+
+        ret_4h_pivot = df.pivot_table(index='timestamp', columns='ticker', values='ret_4h_norm', aggfunc='first')
+        ret_1d_pivot = df.pivot_table(index='timestamp', columns='ticker', values='ret_1d_norm', aggfunc='first')
+        ret_7d_pivot = df.pivot_table(index='timestamp', columns='ticker', values='ret_7d_norm', aggfunc='first')
     
     # Ensure all pivots have the same index (timestamps) and columns (assets)
     # Reindex to ensure alignment and handle missing values
@@ -311,19 +370,56 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
     if has_ta_features:
         rsi_pivot = rsi_pivot.reindex(index=common_index, columns=common_columns)
         rsi_pivot = rsi_pivot.ffill().fillna(0.5)  # RSI neutral = 50
-        
+
         macd_pivot = macd_pivot.reindex(index=common_index, columns=common_columns)
         macd_pivot = macd_pivot.ffill().fillna(0.0)  # MACD neutral = 0
-        
+
         bbw_pivot = bbw_pivot.reindex(index=common_index, columns=common_columns)
         bbw_pivot = bbw_pivot.ffill().fillna(0.0)
-        
+
         atr_pivot = atr_pivot.reindex(index=common_index, columns=common_columns)
         atr_pivot = atr_pivot.ffill().fillna(0.0)
-        
+
         sma_ratio_pivot = sma_ratio_pivot.reindex(index=common_index, columns=common_columns)
         sma_ratio_pivot = sma_ratio_pivot.ffill().fillna(1.0)  # SMA ratio neutral = 1.0
-    
+
+    # Multi-timeframe returns: reindex + neutral fill (0.0 = no move)
+    ret_4h_pivot = ret_4h_pivot.reindex(index=common_index, columns=common_columns).ffill().fillna(0.0)
+    ret_1d_pivot = ret_1d_pivot.reindex(index=common_index, columns=common_columns).ffill().fillna(0.0)
+    ret_7d_pivot = ret_7d_pivot.reindex(index=common_index, columns=common_columns).ffill().fillna(0.0)
+
+    # ── Crypto regime features (Problem 2 fix) ────────────────────────────
+    # Four global signals that directly reflect the crypto market trend.
+    # These are crypto-native equivalents of VIX/DXY/TNX which only capture
+    # traditional market risk — they miss crypto-specific bear markets.
+    #   [0] BTC 1d return  — short-term trend (tanh-normalised)
+    #   [1] BTC 7d return  — medium-term bear/bull direction
+    #   [2] Market 7d return — equal-weight avg of all 14 assets (broad crypto market)
+    #   [3] BTC vs SMA200  — structural trend (0=far below, 0.5=at SMA, 1=far above)
+    if 'BTC' in price_pivot.columns:
+        btc_1d_ret = price_pivot['BTC'].pct_change(96).fillna(0.0).values
+        btc_7d_ret = price_pivot['BTC'].pct_change(672).fillna(0.0).values
+    else:
+        btc_1d_ret = np.zeros(n_steps, dtype=np.float32)
+        btc_7d_ret = np.zeros(n_steps, dtype=np.float32)
+
+    market_7d_ret = price_pivot.pct_change(672).fillna(0.0).mean(axis=1).values
+
+    if has_ta_features and 'BTC' in sma_ratio_pivot.columns:
+        btc_sma200 = sma_ratio_pivot['BTC'].values.astype(np.float32)
+    else:
+        btc_sma200 = np.full(n_steps, 0.5, dtype=np.float32)
+
+    crypto_regime_array = np.stack([
+        np.tanh(btc_1d_ret   / 0.05).astype(np.float32),   # BTC 1d
+        np.tanh(btc_7d_ret   / 0.15).astype(np.float32),   # BTC 7d
+        np.tanh(market_7d_ret/ 0.15).astype(np.float32),   # Market 7d
+        np.clip(btc_sma200, 0.0, 1.0),                      # BTC vs SMA200
+    ], axis=1)
+    print(f"  ✓ Crypto regime array: shape={crypto_regime_array.shape}  "
+          f"BTC_7d mean={crypto_regime_array[:,1].mean():.3f}  "
+          f"btc_sma200 mean={crypto_regime_array[:,3].mean():.3f}")
+
     # Convert to numpy arrays (maintaining [n_steps, n_assets] shape)
     returns_array = returns_pivot.values.astype(np.float32)
     volatility_array = volatility_pivot.values.astype(np.float32)
@@ -346,6 +442,11 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
         # Don't create array if GARCH not present (backward compatibility)
         garch_array = None
     
+    # Multi-timeframe return arrays (always present v7+)
+    ret_4h_array = ret_4h_pivot.values.astype(np.float32)
+    ret_1d_array = ret_1d_pivot.values.astype(np.float32)
+    ret_7d_array = ret_7d_pivot.values.astype(np.float32)
+
     # Convert TA arrays if present
     if has_ta_features:
         rsi_array = rsi_pivot.values.astype(np.float32)
@@ -381,6 +482,25 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
     np.save(str(utility_path), utility_array)
     np.save(str(price_path), price_array)
     np.save(str(benchmark_path), benchmark_returns)  # Phase 6 Sprint 2: Save benchmark returns
+
+    # Macro features
+    macro_path = temp_dir / "macro_array.npy"
+    if macro_array is not None:
+        np.save(str(macro_path), macro_array)
+    else:
+        np.save(str(macro_path), np.full((n_steps, 4), 0.5, dtype=np.float32))
+
+    # Multi-timeframe returns (v7+)
+    ret_4h_path  = temp_dir / "ret_4h_array.npy"
+    ret_1d_path  = temp_dir / "ret_1d_array.npy"
+    ret_7d_path  = temp_dir / "ret_7d_array.npy"
+    np.save(str(ret_4h_path),  ret_4h_array)
+    np.save(str(ret_1d_path),  ret_1d_array)
+    np.save(str(ret_7d_path),  ret_7d_array)
+
+    # Crypto regime features (v7+)
+    crypto_regime_path = temp_dir / "crypto_regime_array.npy"
+    np.save(str(crypto_regime_path), crypto_regime_array)
     
     # Phase 5.5 Sprint 2: Save correlation array (only if present)
     corr_path = temp_dir / "corr_array.npy"
@@ -453,9 +573,17 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
         'n_assets': n_assets,
         'has_ta_features': has_ta_features,  # CRITICAL: Include this flag!
         'has_correlation': has_correlation,  # Phase 5.5 Sprint 2: Correlation flag
-        'has_garch': has_garch  # Phase 6 Sprint 1: GARCH volatility flag
+        'has_garch': has_garch,  # Phase 6 Sprint 1: GARCH volatility flag
+        'has_macro': has_macro,  # Macro context features (VIX, DXY, TNX, macro_trend_score)
+        'macro_path': str(macro_path),
+        # v7: multi-timeframe returns + crypto regime
+        'has_mtf': True,
+        'ret_4h_path': str(ret_4h_path),
+        'ret_1d_path': str(ret_1d_path),
+        'ret_7d_path': str(ret_7d_path),
+        'crypto_regime_path': str(crypto_regime_path),
     }
-    
+
     # Add TA paths if present
     if has_ta_features:
         config['rsi_path'] = str(rsi_path)

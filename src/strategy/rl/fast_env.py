@@ -235,12 +235,6 @@ class FastCryptoEnv(gym.Env):
         # Peak equity for drawdown calculation
         self.peak_equity = float(initial_cash)
 
-        # v8: Rolling Sharpe buffer — stores last 96 step returns (= 1 trading day)
-        # Used to compute rolling Sharpe ratio reward component.
-        # 96 bars × 15 min = 24 hours: short enough to be responsive to crashes,
-        # long enough to smooth out single-step noise.
-        self._sharpe_window = 96
-        self.return_buffer: list = []
     
     def _load_and_optimize(self):
         """
@@ -418,9 +412,6 @@ class FastCryptoEnv(gym.Env):
         self.A_t = 0.0
         self.B_t = 0.0
 
-        # Reset rolling Sharpe buffer
-        self.return_buffer = []
-        
         observation = self._get_observation()
         info = {
             'portfolio_value': float(self.portfolio_value),
@@ -524,9 +515,9 @@ class FastCryptoEnv(gym.Env):
         # Store current weights for next step's turnover calculation
         self.prev_weights = weights.copy()
         
-        # ── Reward: Asymmetric Risk-Adjusted Return + Rolling Sharpe (v8) ────
+        # ── Reward: Asymmetric Risk-Adjusted Return (v7) ────────────────────
         #
-        # Four components, each scaled to ~0.001/step (typical 15-min return):
+        # Three components, each scaled to ~0.001/step (typical 15-min return):
         #
         #  1. Asymmetric portfolio return
         #     Gains feel normal; losses sting 2.5× harder.
@@ -538,15 +529,6 @@ class FastCryptoEnv(gym.Env):
         #
         #  3. VIX-aware cash bonus
         #     Bonus for holding cash during macro risk-off.
-        #
-        #  4. Rolling Sharpe bonus  ← KEY NEW COMPONENT (v8)
-        #     Reward = rolling Sharpe over the last 96 steps (1 trading day).
-        #     A static portfolio has a FIXED Sharpe — it cannot improve it by
-        #     doing the same thing every step.  A dynamic portfolio that goes
-        #     short during crashes raises its rolling Sharpe → higher reward.
-        #     This is the incentive the model was missing to trade dynamically.
-        #     Scale: typical Sharpe ≈ ±0.1–0.4  →  reward contribution ≈ ±0.0002–0.0008/step
-        #            (same order as the asymmetric return component)
 
         r = float(net_portfolio_return)
 
@@ -566,23 +548,6 @@ class FastCryptoEnv(gym.Env):
             macro_score = float(self.macro_array[self.current_step, 3])
             risk_off_signal = max(0.0, 0.4 - macro_score) / 0.4
             reward += float(self.current_weights[-1]) * risk_off_signal * 0.001
-
-        # Component 4: Rolling Sharpe bonus
-        # Update the return buffer with this step's net return
-        self.return_buffer.append(r)
-        if len(self.return_buffer) > self._sharpe_window:
-            self.return_buffer.pop(0)   # drop oldest entry (O(n) but n=96, negligible)
-
-        if len(self.return_buffer) >= 20:  # need at least 20 steps for a stable estimate
-            ret_arr   = np.array(self.return_buffer, dtype=np.float32)
-            mu        = float(ret_arr.mean())
-            sigma     = float(ret_arr.std()) + 1e-8
-            rolling_sharpe = mu / sigma   # dimensionless: positive = profitable & consistent
-            # Scale so Sharpe≈0.1 → +0.0002/step, Sharpe≈0.4 → +0.0008/step
-            # This makes it competitive with but not dominant over the step-return component
-            reward += rolling_sharpe * 0.002
-        else:
-            rolling_sharpe = 0.0
 
         # Keep benchmark return for logging (no longer used in reward)
         if self.benchmark_returns is not None and self.current_step < len(self.benchmark_returns):
@@ -617,9 +582,8 @@ class FastCryptoEnv(gym.Env):
             'short_exposure'   : short_exposure,
             'cash_weight'      : float(weights[-1]),
             'step'             : int(self.current_step),
-            'reward_type'      : 'asymmetric_rolling_sharpe',
+            'reward_type'      : 'asymmetric_drawdown_vix',
             'reward'           : float(reward),
-            'rolling_sharpe'   : float(rolling_sharpe) if 'rolling_sharpe' in dir() else 0.0,
         }
         
         return observation, reward, terminated, truncated, info

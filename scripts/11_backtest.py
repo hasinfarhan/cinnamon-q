@@ -60,10 +60,10 @@ from strategy.rl.data_loader import prepare_training_data
 from strategy.rl.fast_env import FastCryptoEnv
 
 # ── Config ─────────────────────────────────────────────────
-MODEL_PATH    = project_root / "models" / "hdrl_worldclass_v8" / "final_model.zip"
-VECNORM_PATH  = project_root / "models" / "hdrl_worldclass_v8" / "vec_normalize.pkl"
+MODEL_PATH    = project_root / "models" / "hdrl_worldclass_v7" / "final_model.zip"
+VECNORM_PATH  = project_root / "models" / "hdrl_worldclass_v7" / "vec_normalize.pkl"
 DATA_PATH     = project_root / "data" / "processed" / "crypto_deep_v4_sentiment.parquet"
-REPORT_DIR    = project_root / "reports" / "backtest_v8"
+REPORT_DIR    = project_root / "reports" / "backtest_v7"
 INITIAL_CASH  = 100_000.0
 TEST_FRACTION = 0.20          # last 20% = held-out test set
 BARS_PER_YEAR = 365.25 * 24 * 4  # 15-min bars per year

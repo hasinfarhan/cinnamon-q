@@ -163,10 +163,10 @@ def main():
         print("  Research Track: Multimodal Brain mode (Embeddings + Market Features)!")
         print("  Model directory: models/hdrl_multimodal_v1")
     elif v4_sentiment_path.exists() and data_path == v4_sentiment_path:
-        model_dir = project_root / "models" / "hdrl_worldclass_v8"
+        model_dir = project_root / "models" / "hdrl_worldclass_v7"
         log_dir = project_root / "logs" / "hdrl_training_worldclass_v8"
         print("  THESIS MODEL v8: rolling Sharpe reward — forces dynamic regime-aware allocation!")
-        print("  Model directory: models/hdrl_worldclass_v8")
+        print("  Model directory: models/hdrl_worldclass_v7")
     elif sentiment_data_path.exists() and data_path == sentiment_data_path:
         model_dir = project_root / "models" / "hdrl_worldclass_v2"
         log_dir = project_root / "logs" / "hdrl_training_worldclass_v2"

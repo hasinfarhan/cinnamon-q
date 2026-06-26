@@ -60,13 +60,14 @@ from strategy.rl.data_loader import prepare_training_data
 from strategy.rl.fast_env import FastCryptoEnv
 
 # ── Config ─────────────────────────────────────────────────
-MODEL_PATH    = project_root / "models" / "hdrl_worldclass_v14" / "final_model.zip"
-VECNORM_PATH  = project_root / "models" / "hdrl_worldclass_v14" / "vec_normalize.pkl"
-DATA_PATH     = project_root / "data" / "processed" / "crypto_deep_v4_sentiment.parquet"
-REPORT_DIR    = project_root / "reports" / "backtest_v14"
+MODEL_PATH    = project_root / "models" / "hdrl_worldclass_v40" / "final_model.zip"
+VECNORM_PATH  = project_root / "models" / "hdrl_worldclass_v40" / "vec_normalize.pkl"
+_v5 = project_root / "data" / "processed" / "crypto_deep_v5.parquet"
+DATA_PATH     = _v5 if _v5.exists() else project_root / "data" / "processed" / "crypto_deep_v4_sentiment.parquet"
+REPORT_DIR    = project_root / "reports" / "backtest_v40"
 INITIAL_CASH  = 100_000.0
 TEST_FRACTION = 0.20          # last 20% = held-out test set
-BARS_PER_YEAR = 365.25 * 24 * 4  # 15-min bars per year
+BARS_PER_YEAR = 365.25 * 6   # 4h bars per year (v27)
 RISK_FREE_PER_BAR = 0.0       # assume 0 risk-free rate
 
 REPORT_DIR.mkdir(parents=True, exist_ok=True)
@@ -91,7 +92,7 @@ print(f"  Model action shape: {action_shape}")
 print("\n[2/6] Preparing data arrays (this takes ~2 min for 1.5M rows)...")
 temp_dir = Path(tempfile.mkdtemp(prefix="backtest_"))
 try:
-    data_cfg = prepare_training_data(DATA_PATH, temp_dir)
+    data_cfg = prepare_training_data(DATA_PATH, temp_dir, resample_freq='4h')
     n_steps  = data_cfg["n_steps"]
     n_assets = data_cfg["n_assets"]
     assets   = data_cfg["asset_list"]
@@ -108,7 +109,7 @@ try:
     days_test  = (test_end - test_start).total_seconds() / 86400
 
     print(f"\n  Train period  : up to {train_end.date()}")
-    print(f"  Test period   : {test_start.date()} → {test_end.date()} ({days_test:.0f} days, {n_test:,} steps)")
+    print(f"  Test period   : {test_start.date()} -> {test_end.date()} ({days_test:.0f} days, {n_test:,} steps)")
 
     # ── Build test-only data_config (slice npy arrays) ────
     print("\n[3/6] Slicing arrays to test period...")
@@ -150,6 +151,11 @@ try:
         "ret_1d_path"        : _slice_and_save(data_cfg["ret_1d_path"],        "ret_1d_array.npy")        if data_cfg.get("has_mtf") else "",
         "ret_7d_path"        : _slice_and_save(data_cfg["ret_7d_path"],        "ret_7d_array.npy")        if data_cfg.get("has_mtf") else "",
         "crypto_regime_path" : _slice_and_save(data_cfg["crypto_regime_path"], "crypto_regime_array.npy") if data_cfg.get("has_mtf") else "",
+        # v26: Gate 3 (Regime Uncertainty Gate) is inference-only — activate it here
+        "training_mode"      : False,
+        # bars_per_day: needed for correct borrow rate and Calmar cooldown in fast_env.
+        # Without this the env defaults to 96 (15-min), giving 16× wrong borrow rate.
+        "bars_per_day"       : data_cfg.get("bars_per_day", 6),
     }
     print(f"  TA features : {test_cfg['has_ta_features']}")
     print(f"  Correlation : {test_cfg['has_correlation']}")
@@ -195,7 +201,7 @@ try:
     model_obs_dim = obs_shape[0]
     _needs_v5_pad = (model_obs_dim == 160 and env_obs_dim == 146)
     if _needs_v5_pad:
-        print(f"  ⚠ Obs-shape shim active: padding env({env_obs_dim}) → model({model_obs_dim})")
+        print(f"  [!!] Obs-shape shim active: padding env({env_obs_dim}) -> model({model_obs_dim})")
         print(f"    Inserting 7-bar volatility at slot[1] of each asset block (v5 layout)")
 
     def _pad_obs_to_v5(obs_146: np.ndarray) -> np.ndarray:
@@ -262,27 +268,20 @@ try:
     # ══════════════════════════════════════════════════════
     print("\n[6/6] Computing metrics and benchmarks...")
 
-    # ── Load raw prices for benchmark construction ────────
-    df = pd.read_parquet(DATA_PATH)
-    df = df.sort_values(["timestamp", "ticker"]).reset_index(drop=True)
-    # Filter to test period
-    test_ts_set = set(str(t) for t in timestamps[split_at:])
-    df_test = df[df["timestamp"] >= test_start].copy()
+    # ── Benchmarks from pre-resampled test arrays ─────────
+    # Loading raw 15-min parquet then comparing to 4h model steps would cause a
+    # length mismatch (21k 15-min bars vs 1.3k 4h bars), so we use the
+    # already-resampled returns that the model also used.
+    _test_rets = np.load(test_cfg["returns_path"], mmap_mode="r")  # (n_test, n_assets)
 
-    # Pivot to price matrix — ffill missing tickers but keep all timestamps
-    price_pivot = df_test.pivot_table(index="timestamp", columns="ticker", values="close", aggfunc="first")
-    price_pivot = price_pivot.sort_index().ffill().bfill()  # fill gaps, keep all timestamps
-
-    # ── BTC buy-and-hold ──────────────────────────────────
-    btc_prices = price_pivot["BTC"]
-    btc_returns = btc_prices.pct_change().fillna(0.0).values
+    btc_idx    = assets.index("BTC")
+    btc_returns = _test_rets[:, btc_idx]
     btc_equity  = INITIAL_CASH * np.cumprod(1 + btc_returns)
     btc_equity  = np.concatenate([[INITIAL_CASH], btc_equity])
 
-    # ── Equal-weight buy-and-hold (17 assets) ─────────────
-    eq_returns  = price_pivot.pct_change().fillna(0.0).mean(axis=1).values
-    eq_equity   = INITIAL_CASH * np.cumprod(1 + eq_returns)
-    eq_equity   = np.concatenate([[INITIAL_CASH], eq_equity])
+    eq_returns = _test_rets.mean(axis=1)
+    eq_equity  = INITIAL_CASH * np.cumprod(1 + eq_returns)
+    eq_equity  = np.concatenate([[INITIAL_CASH], eq_equity])
 
     # ── Metric helper ─────────────────────────────────────
     def compute_metrics(equity_curve: np.ndarray, label: str) -> dict:
@@ -368,7 +367,7 @@ try:
         "CINNAMON-Q BACKTEST SUMMARY",
         "=" * 65,
         f"Test period : {test_start.date()} to {test_end.date()} ({days_test:.0f} days)",
-        f"Steps       : {n_test:,}  (15-min bars)",
+        f"Steps       : {n_test:,}  (4h bars)",
         f"Assets      : {n_assets} ({', '.join(assets)})",
         f"Model       : RecurrentPPO LSTM, 500k training steps, Gemini LLM utility scores",
         "",
@@ -466,9 +465,9 @@ try:
         print(f"  Saved: {REPORT_DIR / 'growth_of_1.png'}")
 
     except ImportError:
-        print("  (matplotlib not available — skipping plots)")
+        print("  (matplotlib not available - skipping plots)")
     except Exception as plot_err:
-        print(f"  (plot error — {plot_err})")
+        print(f"  (plot error - {plot_err})")
 
 finally:
     shutil.rmtree(temp_dir, ignore_errors=True)

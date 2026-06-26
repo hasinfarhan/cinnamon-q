@@ -69,14 +69,19 @@ class FastCryptoEnv(gym.Env):
         self.A_t = 0.0  # Running mean of active return (First Moment)
         self.B_t = 0.0  # Running second moment of active return (Variance)
         self.eta = 0.01  # Learning/decay rate for EMA (small = slow adaptation)
-        
+
         # Phase 5.6 Sprint 1: Fortress Brain - Composite Reward Coefficients
         self.sortino_coeff = 0.5  # Penalty for downside volatility
         self.calmar_coeff = 2.0  # Penalty for drawdown (quadratic)
-        
+
         # Phase 5.6 Sprint 1: Track peak equity (high water mark) for Calmar calculation
         self.peak_equity = 0.0
-        
+
+        # v27: bars per trading day — set here as default, overridden from data_config below.
+        # Used to scale borrow rate and cooldown steps to actual calendar time regardless
+        # of bar frequency (15-min=96, 4h=6, 1h=24).
+        self.bars_per_day = 96
+
         # Use memory-mapped files if provided, otherwise load from parquet
         if data_config is not None:
             # Lightweight initialization: load from memory-mapped files (zero-copy)
@@ -130,6 +135,12 @@ class FastCryptoEnv(gym.Env):
             self.timestamps = data_config['timestamps']
             self.n_steps = data_config['n_steps']
             self.has_ta_features = data_config.get('has_ta_features', False)
+            # v26: Gate 3 is inference-only. During training (default True) the gate
+            # is SKIPPED so bear/bull windows receive full P&L gradient. Set False
+            # in backtest data_config to activate the gate at inference time.
+            self.training_mode = data_config.get('training_mode', True)
+            # v27: bar frequency — 96 for 15-min (default), 6 for 4h
+            self.bars_per_day  = data_config.get('bars_per_day', 96)
             
             # Load TA arrays if present
             if self.has_ta_features:
@@ -152,14 +163,30 @@ class FastCryptoEnv(gym.Env):
                 data_path = project_root / "data" / "processed" / "crypto_training_data.parquet"
             
             self.data_path = data_path
-            print("📊 Loading and optimizing crypto training data...")
+            print("[*] Loading and optimizing crypto training data...")
             self._load_and_optimize()
         
         # Get unique assets
         self.assets = sorted(self.asset_list)
         self.n_assets = len(self.assets)
-        
-        print(f"✓ Optimized {self.n_steps} steps for {self.n_assets} assets: {self.assets}")
+
+        # v38: Cyclical time features — hour/day-of-week/month as sin+cos pairs.
+        # Lets the LSTM learn: weekend liquidity dips, monthly options expiry,
+        # 8h funding rate cycles (every 2 bars at 4h), quarterly rebalancing.
+        ts_index = pd.to_datetime(self.timestamps)
+        _h = ts_index.hour.values.astype(np.float32)
+        _d = ts_index.dayofweek.values.astype(np.float32)
+        _m = (ts_index.month.values - 1).astype(np.float32)  # 0-indexed so Jan=0
+        self.time_array = np.stack([
+            np.sin(2 * np.pi * _h / 24).astype(np.float32),
+            np.cos(2 * np.pi * _h / 24).astype(np.float32),
+            np.sin(2 * np.pi * _d / 7).astype(np.float32),
+            np.cos(2 * np.pi * _d / 7).astype(np.float32),
+            np.sin(2 * np.pi * _m / 12).astype(np.float32),
+            np.cos(2 * np.pi * _m / 12).astype(np.float32),
+        ], axis=1)
+
+        print(f"[OK] Optimized {self.n_steps} steps for {self.n_assets} assets: {self.assets}")
         
         # v9 BICAMERAL — Brain 1 outputs Alpha Scores per asset in [-1, +1]
         #   +1 = maximum long conviction (expect strong positive return)
@@ -175,33 +202,82 @@ class FastCryptoEnv(gym.Env):
         # v10: Hard risk gate thresholds
         self.calmar_threshold          = 0.15   # Gate 1 fires  at 15% drawdown
         self.calmar_recovery_threshold = 0.07   # Gate 1 resets at  7% drawdown (hysteresis)
-        self.calmar_cooldown_steps     = 96     # Minimum 1 day (96×15min) before checking recovery
-        self.macro_panic_threshold     = 0.30   # Gate 2: macro_score < 0.30 → scale down
+        # v27: cooldown = 1 trading day regardless of bar frequency
+        self.calmar_cooldown_steps     = self.bars_per_day
+        # v16: recalibrated from 0.30 → 0.50. macro_trend_score actual range is
+        # [0.37, 0.73] — the old threshold of 0.30 is BELOW the minimum possible
+        # value so the gate has never fired once. 0.50 fires ~6.5% of steps.
+        self.macro_panic_threshold     = 0.50   # Gate 2: macro_score < 0.50 → scale down
 
         # Gate 1 runtime state (reset on each episode)
         self.calmar_gate_active  = False
         self.calmar_cooldown_rem = 0
 
-        # v9: Episode diversity — pre-compute bear/bull/neutral start indices
-        # Regime label based on BTC 7d return (crypto_regime column 1)
-        # Used in reset() to sample uniformly across market regimes
+        # v38: 50d/200d SMA crossover regime labeling — diagnostic only, not used for sampling.
+        #
+        # Sampling is uniform random (reset() below). Labels are computed here for
+        # diagnostic display only so we can verify the data distribution looks right.
+        #
+        # Why crossover instead of single sma_200:
+        #   sma_200 alone lags regime transitions by 4-7 months (missed all of 2022-Q1
+        #   bear and wrongly labeled 2023 recovery as bear). The 50d/200d crossover
+        #   (death cross / golden cross) catches regime changes within 4-6 weeks and
+        #   correctly identified 2022-Q1 as BEAR and 2023-Q1 recovery as neutral.
+        #
+        # Why NOT two-stage equal-weight sampling:
+        #   Neutral is only 9.5% of bars (brief crossover transition windows). Equal
+        #   33/33/33 sampling would oversample neutral 3.5x and distort training.
+        #   Uniform random gives the natural 55% bull / 35% bear / 9% neutral — which
+        #   reflects real market conditions and gives Brain 1 ~3,100 genuine bear bars
+        #   (full 2022 crash + 2025 decline) without any artificial weighting.
         self._regime_indices = {}
-        if hasattr(self, 'has_crypto_regime') and self.has_crypto_regime:
-            WARMUP  = 200
-            MIN_EP  = 1000
-            btc_7d  = self.crypto_regime_array[:, 1]
-            for name, mask in [
-                ('bear',    btc_7d < -0.3),
-                ('bull',    btc_7d >  0.3),
-                ('neutral', (btc_7d >= -0.3) & (btc_7d <= 0.3)),
-            ]:
-                idx = np.where(mask)[0]
-                idx = idx[(idx >= WARMUP) & (idx < self.n_steps - MIN_EP)]
-                self._regime_indices[name] = idx
+        if hasattr(self, 'price_array') and hasattr(self, 'asset_list'):
+            try:
+                WARMUP = 200
+                MIN_EP = 1000
+                valid  = np.arange(WARMUP, self.n_steps - MIN_EP)
 
-        # Short position borrowing cost: 3% per year → per 15-min bar
+                btc_idx   = list(self.asset_list).index('BTC')
+                btc_price = pd.Series(self.price_array[:, btc_idx].astype(np.float64))
+                sma_50d   = btc_price.rolling(300,  min_periods=50).mean()
+                sma_200d  = btc_price.rolling(1200, min_periods=100).mean()
+                ratio     = (sma_50d / sma_200d).fillna(1.0).values
+
+                bull_mask    = ratio > 1.02
+                bear_mask    = ratio < 0.98
+                neutral_mask = ~bull_mask & ~bear_mask
+
+                for name, mask in [('bull', bull_mask), ('bear', bear_mask), ('neutral', neutral_mask)]:
+                    idx = valid[mask[valid]]
+                    self._regime_indices[name] = idx
+                    print(f"  v38 crossover regime [{name:7s}]: {len(idx):,} valid start indices")
+            except (ValueError, Exception):
+                pass  # BTC not in asset list or price_array unavailable — skip
+
+        # v39: SMA10 signal (C4) and SMA50 signal (C6)
+        # SMA10 = 60-bar (10-day at 4h) — catches regime shifts in ~1-2 weeks → C4 direct alpha gradient
+        # SMA50 = 300-bar (50-day at 4h) — catches regime shifts in ~3-4 weeks → C6 weight penalty
+        # Stored as price/SMA - 1.0, clipped to ±0.30 to prevent extreme values in volatile periods.
+        self.sma10_signal = np.zeros(self.n_steps, dtype=np.float32)
+        self.sma50_signal = np.zeros(self.n_steps, dtype=np.float32)
+        if hasattr(self, 'price_array') and hasattr(self, 'asset_list'):
+            try:
+                _btc_idx   = list(self.asset_list).index('BTC')
+                _btc_price = pd.Series(self.price_array[:, _btc_idx].astype(np.float64))
+                _sma10     = _btc_price.rolling(60,  min_periods=10).mean()
+                _sma50     = _btc_price.rolling(300, min_periods=50).mean()
+                self.sma10_signal = np.nan_to_num(np.clip(
+                    (_btc_price.values / _sma10.values - 1.0).astype(np.float32), -0.30, 0.30), nan=0.0)
+                self.sma50_signal = np.nan_to_num(np.clip(
+                    (_btc_price.values / _sma50.values - 1.0).astype(np.float32), -0.30, 0.30), nan=0.0)
+                print(f"  v39 SMA10 signal: mean={float(np.nanmean(self.sma10_signal)):.3f}  std={float(np.nanstd(self.sma10_signal)):.3f}")
+                print(f"  v39 SMA50 signal: mean={float(np.nanmean(self.sma50_signal)):.3f}  std={float(np.nanstd(self.sma50_signal)):.3f}")
+            except (ValueError, Exception):
+                pass
+
+        # Short position borrowing cost: 3% per year → per bar (scales with bar frequency)
         # Models crypto perpetual futures funding rate (typical for liquid coins)
-        self.short_borrow_rate = 0.03 / (365 * 24 * 4)
+        self.short_borrow_rate = 0.03 / (365 * self.bars_per_day)
         
         # Define observation space DYNAMICALLY
         # Base features per asset: [return, volatility, commit_count_norm, utility_score] = 4
@@ -230,8 +306,12 @@ class FastCryptoEnv(gym.Env):
         # Global feature count
         n_macro_features        = 4 if has_macro         else 0   # VIX, DXY, TNX, macro_score
         n_crypto_regime_features= 4 if has_crypto_regime else 0   # v7: BTC1d, BTC7d, Mkt7d, SMA200
+        # v20: current per-asset weights added to observation so Brain 1 can see
+        # its own position book directly (previously only saw total cash + PV).
+        n_position_features     = self.n_assets                    # one weight per asset
 
-        n_obs_features = (self.n_assets * n_features_per_asset) + 2 + n_macro_features + n_crypto_regime_features
+        n_time_features = 6  # hour_sin/cos, dow_sin/cos, month_sin/cos
+        n_obs_features = (self.n_assets * n_features_per_asset) + 2 + n_macro_features + n_crypto_regime_features + n_position_features + n_time_features
 
         self.n_features_per_asset = n_features_per_asset  # stored for obs construction
 
@@ -249,11 +329,13 @@ class FastCryptoEnv(gym.Env):
         feature_info   = f" ({', '.join(feature_parts)})" if feature_parts else ""
         global_info    = []
         if has_macro:          global_info.append("macro×4")
-        if has_crypto_regime:  global_info.append("crypto_regime×4")
+        if has_crypto_regime:  global_info.append("crypto_regime*4")
+        global_info.append(f"positions*{self.n_assets}")
+        global_info.append("time*6")
         global_str = " + " + " + ".join(global_info) if global_info else ""
-        print(f"  ✓ Observation space: {n_obs_features} features "
+        print(f"  [OK] Observation space: {n_obs_features} features "
               f"({base_features_per_asset} base{feature_info} + {ta_features_per_asset} TA per asset{global_str})"
-              f"  [v7: MTF returns + crypto regime]")
+              f"  [v38: +cyclical time features]")
         
         # Initialize episode state
         self.current_step = 0
@@ -341,7 +423,7 @@ class FastCryptoEnv(gym.Env):
     
     def _construct_portfolio(self, alpha_scores: np.ndarray) -> np.ndarray:
         """
-        v14 Brain 2 — Sortino Solver (The Risk Manager).
+        v16 Brain 2 — Sortino Solver (The Risk Manager).
 
         Converts Brain 1's alpha scores into portfolio weights by maximising
         the Sortino Ratio using a semicovariance matrix.
@@ -356,6 +438,13 @@ class FastCryptoEnv(gym.Env):
         v14 lesson: alpha accuracy scale 0.001 was too weak to flip BTC/ETH/AVAX
         negative. Tripled to 0.003. MAX_PER_ASSET halved from 0.20 → 0.10 to
         prevent single-asset concentration blowing up the portfolio.
+        v15 lesson: 0.003 was too strong — Brain 1 saturated at -1.0 in all
+        regimes ("short everything"). Fix: scale→0.0015, entropy bonus to
+        penalise saturation, loss aversion 2.5→1.75 to allow neutral stance.
+        v16 lesson: binary accuracy reward has base-rate exploit (75% non-bull
+        training steps → "always short" wins). Fix: alpha-weighted return signal,
+        bull oversampling 3×, macro thresholds recalibrated, drawdown drag halved,
+        entropy bonus 4×.
 
         Constraints enforced
         --------------------
@@ -366,8 +455,11 @@ class FastCryptoEnv(gym.Env):
         """
         alpha = np.clip(alpha_scores, -1.0, 1.0).astype(np.float64)
 
-        # ── Step 1: Semicovariance matrix from recent 96-bar history ─────────
-        W     = 96   # 1 trading day (96 × 15 min)
+        # ── Step 1: Semicovariance matrix from recent history ─────────
+        # v29: use 20 trading days (not 1). At 4h bars, bars_per_day=6 → W was only
+        # 6 observations for a 14×14 matrix (196 params) — completely underdetermined.
+        # 20 days = 120 bars gives a statistically valid semicovariance estimate.
+        W = getattr(self, 'bars_per_day', 96) * 20
         t     = self.current_step
         start = max(0, t - W)
         hist  = self.returns_array[start:t].astype(np.float64)  # (W, n_assets)
@@ -395,13 +487,35 @@ class FastCryptoEnv(gym.Env):
             vol   = self.volatility_array[t].astype(np.float64)
             raw_w = alpha / np.clip(vol, 1e-8, None)
 
-        # ── Step 3: Apply exposure constraints (v13: constant limits = low turnover) ─
-        # v11 used btc_7d-linked limits here → limits changed every 15 min →
-        # massive portfolio churn → ~72% of portfolio consumed by 0.1% fees.
-        # Regime awareness lives in _apply_risk_gates() (SMA200, changes monthly).
+        # ── Step 2.5: Direction-lock REMOVED (v38) ──────────────────────────────
+        # v33 direction-lock was blocking Brain 1 from learning negative BTC alpha.
+        # Mechanism: lock zeroed any long in bear mode → BTC position = 0 → zero
+        # P&L gradient for BTC alpha → Brain 1 never penalised for bullish BTC in
+        # a crash → BTC alpha stuck at +0.66 throughout the entire 2025-2026 bear.
+        # The SMA regime signal is still in Brain 1's observation (crypto_regime[:,3])
+        # so it can learn the direction itself and get punished when wrong.
+
+        # ── Step 3: Apply exposure constraints (v19: conviction-scaled) ────────
+        # v13–v18 bug: normalisation always rescaled to exactly MAX_LONG / MAX_SHORT
+        # regardless of alpha magnitude.  alpha=-1.0 and alpha=-0.1 produced
+        # identical 0.40 short books — Brain 1 only needed to get the SIGN right
+        # so it saturated at ±1.0 with zero incentive to vary magnitude.
+        #
+        # Fix (v19): scale total gross exposure by mean |alpha| conviction.
+        #   alpha = ±1.0 for all assets → full MAX_LONG / MAX_SHORT exposure
+        #   alpha = ±0.5 for all assets → half exposure
+        #   alpha ≈  0.0              → near-zero exposure (model chooses flat)
+        #
+        # Brain 1's output magnitude now directly affects portfolio P&L, so
+        # gradients flow correctly: wrong-direction at high conviction costs
+        # more than wrong-direction at low conviction.  The model learns to
+        # go high-conviction in the correct direction and near-zero when unsure.
         MAX_LONG      = 0.80
-        MAX_SHORT     = 0.40
-        MAX_PER_ASSET = 0.10   # v14: halved from 0.20 — AVAX at 20% cost -18% in v13
+        MAX_SHORT     = 0.60   # v29: raised from 0.40 → enables 10%+ returns in bear
+        MAX_PER_ASSET = 0.10
+
+        # Mean absolute conviction ∈ [0, 1]
+        mean_conviction = float(np.mean(np.abs(alpha)))
 
         longs  = np.clip(raw_w,  0.0, None)
         shorts = np.clip(raw_w, None, 0.0)
@@ -409,8 +523,9 @@ class FastCryptoEnv(gym.Env):
         long_sum  = float(longs.sum())
         short_sum = float(np.abs(shorts).sum())
 
-        if long_sum  > 1e-8: longs  = longs  / long_sum  * MAX_LONG
-        if short_sum > 1e-8: shorts = shorts / short_sum * MAX_SHORT
+        # Scale aggregate exposure by conviction — magnitude now matters
+        if long_sum  > 1e-8: longs  = longs  / long_sum  * (MAX_LONG  * mean_conviction)
+        if short_sum > 1e-8: shorts = shorts / short_sum * (MAX_SHORT * mean_conviction)
 
         longs  = np.clip(longs,   0.0,           MAX_PER_ASSET)
         shorts = np.clip(shorts, -MAX_PER_ASSET,  0.0)
@@ -439,6 +554,29 @@ class FastCryptoEnv(gym.Env):
         If the macro_trend_score falls below 0.30 (extreme global fear),
         all positions are scaled down proportionally.  The lower the score,
         the more defensive the portfolio becomes (min 10% of normal size).
+
+        Gate 3 — Regime Uncertainty Gate (v25)
+        ----------------------------------------
+        When BTC 7-day momentum is in neutral (|btc_7d| ≤ 0.3), the regime
+        is ambiguous — no reliable bull or bear trend to exploit. Positions
+        are tapered linearly to zero as btc_7d approaches zero.
+
+        This is a HARD ARCHITECTURAL CONSTRAINT, not a reward signal.
+        Previous attempts (v22–v24) tried to teach neutral=cash via reward
+        shaping (cash bonuses, position penalties). All failed because:
+          - Cash bonus → created "cash mode" that bled into bull periods (v22)
+          - Position penalty → C4 pushed model LONG in neutral instead (v23)
+          - Weak cash bonus → LSTM bear/bull memory overwhelmed it (v24)
+        The reward signal cannot reliably force a specific portfolio state
+        because the LSTM carries regime memory across steps. A hard gate in
+        Brain 2 enforces the constraint architecturally without touching the
+        reward function or creating any training bias.
+
+        Scale: |btc_7d| / 0.3
+          btc_7d =  0.00 → scale = 0.00 → 100% cash (full neutral)
+          btc_7d = ±0.15 → scale = 0.50 → 50% of normal positions
+          btc_7d = ±0.30 → scale = 1.00 → full positions restored
+          btc_7d > ±0.30 → gate inactive → Brain 2 runs unconstrained
         """
         weights = weights.copy()
 
@@ -482,6 +620,33 @@ class FastCryptoEnv(gym.Env):
                 weights[:-1] *= scale
                 gross         = float(np.abs(weights[:-1]).sum())
                 weights[-1]   = float(np.clip(1.0 - gross, 0.0, 1.0))
+
+        # ── Gate 3: Regime Uncertainty Gate (v26 — SMA200, hard zero, inference-only) ──
+        # SKIPPED during training (self.training_mode=True, the default).
+        # v25 lesson: gate during training silenced neutral sub-steps inside bear/bull
+        # windows → model lost bear-SHORT learning (BTC_alpha -0.974→+0.270) → -57%.
+        # Fix: gate fires ONLY at inference (training_mode=False in backtest data_config).
+        #
+        # Signal change: btc_7d → btc_sma200_norm (col 3).
+        # v26 preview showed btc_7d gate still lost even in "bear" weeks (-9.12% contrib)
+        # because btc_7d is lagging: gate fires AFTER the crash, SHORT enters at bottom
+        # as market rebounds. SMA200 is structural: when BTC is below 200-day MA, the
+        # TREND is bearish for weeks — gate stays OFF, model stays SHORT throughout.
+        #
+        # Gate logic (hard zero, not linear taper):
+        #   sma200_norm ∈ (0.475, 0.525): BTC within ±5% of SMA200 → transitioning → CASH
+        #   sma200_norm outside that band: clear bull/bear trend → model trades freely
+        #
+        # Linear taper was insufficient: at sma200=0.49 (just inside neutral), taper
+        # scale = (0.49-0.475)/(0.525-0.475) = 0.3 → still 30% positions → still loses.
+        # Hard zero guarantees zero exposure during regime transitions.
+        if not getattr(self, 'training_mode', True):
+            if hasattr(self, 'crypto_regime_array') and self.current_step < len(self.crypto_regime_array):
+                sma200_norm = float(self.crypto_regime_array[self.current_step, 3])
+                if abs(sma200_norm - 0.5) <= 0.025:   # within ±5% of SMA200
+                    weights[:-1] = 0.0
+                    weights[-1]  = 1.0
+                    return weights
 
         return weights
 
@@ -545,6 +710,13 @@ class FastCryptoEnv(gym.Env):
         obs[idx + 1] = self.current_weights[-1]
         idx += 2
 
+        # v20: per-asset position weights — Brain 1 can now see its own book.
+        # Without this, the LSTM had to infer its own positions from memory
+        # across random episode starts, making it harder to learn to flip direction.
+        # Weights are in [-MAX_PER_ASSET, +MAX_PER_ASSET] = [-0.10, +0.10].
+        obs[idx:idx + self.n_assets] = self.current_weights[:-1]
+        idx += self.n_assets
+
         # Macro features: VIX, DXY, TNX, macro_trend_score (traditional market context)
         if hasattr(self, 'has_macro') and self.has_macro and hasattr(self, 'macro_array'):
             obs[idx:idx + 4] = self.macro_array[self.current_step]
@@ -556,6 +728,10 @@ class FastCryptoEnv(gym.Env):
             obs[idx:idx + 4] = self.crypto_regime_array[self.current_step]
             idx += 4
 
+        # v38: Cyclical time features (hour_sin/cos, dow_sin/cos, month_sin/cos)
+        obs[idx:idx + 6] = self.time_array[self.current_step]
+        idx += 6
+
         return obs
     
     def reset(
@@ -566,18 +742,16 @@ class FastCryptoEnv(gym.Env):
         """Reset environment to initial state."""
         super().reset(seed=seed)
         
-        # v9 Episode Diversity — regime-stratified start sampling
-        # Pick a regime uniformly at random (bear / bull / neutral each ~33%),
-        # then pick a random start step within that regime.
-        # This counteracts the natural imbalance in the data (~40% bull, ~25% bear)
-        # so the LSTM sees equal bear/bull/neutral exposure during training.
+        # v38: Uniform random sampling — no regime weighting.
+        # Two-stage equal-weight sampling (v17) oversampled neutral (9.5% of bars
+        # inflated to 33%) and undersampled bull/bear. Uniform random reflects actual
+        # market distribution: ~55% bull, ~35% bear, ~9% neutral. Data has enough
+        # bear bars (full 2022 crash + 2025 decline) without artificial oversampling.
+        # _regime_indices are still computed in __init__ for diagnostic display only.
         WARMUP = 200
-        available = {k: v for k, v in self._regime_indices.items() if len(v) > 0}
-        if available and self.n_steps > 2000:
-            regime = np.random.choice(list(available.keys()))
-            self.current_step = int(np.random.choice(available[regime]))
-        elif self.n_steps > 2000:
-            self.current_step = np.random.randint(WARMUP, self.n_steps - 1000)
+        MIN_EP  = 1000
+        if self.n_steps > WARMUP + MIN_EP:
+            self.current_step = np.random.randint(WARMUP, self.n_steps - MIN_EP)
         else:
             self.current_step = WARMUP
         
@@ -693,47 +867,152 @@ class FastCryptoEnv(gym.Env):
 
         r = float(net_portfolio_return)
 
-        # Component 1: Asymmetric return (losses ×2.5)
-        reward = r if r >= 0.0 else r * 2.5
-
-        # Component 2: Proactive drawdown drag
+        # Compute current drawdown first (used by Components 1 and 2)
         if self.peak_equity > 1e-8:
             current_drawdown = max(0.0,
                 (self.peak_equity - float(self.portfolio_value)) / self.peak_equity)
         else:
             current_drawdown = 0.0
-        reward -= current_drawdown * 0.01
 
-        # Component 3: VIX-aware cash bonus
+        # Component 1: Drawdown-triggered loss aversion (v20)
+        #
+        # v19 bug: applying 1.75× to EVERY negative bar created short bias.
+        # Math: in a 52/48 bull market, long positions (56% exposure) lose on
+        # 48% of bars while short positions (28% exposure) lose on 52% of bars.
+        # The smaller short size nearly cancels the higher loss frequency, making
+        # short ≈ as cheap as long in moderate bull markets. Brain 1 correctly
+        # learned to stay short because the reward said so.
+        #
+        # Fix: only fire the 1.75× when ALREADY in a sustained drawdown.
+        # → Long in bull: portfolio trends up, drawdown ≈ 0 → losses treated normally
+        # → Short in bull: portfolio trends down, drawdown builds → all losses hit 1.75×
+        # This preserves loss aversion for sustained wrong-direction positions while
+        # not penalising individual noise bars in an otherwise winning position.
+        if r < 0.0 and current_drawdown > 0.005:
+            reward = r * 1.35   # in drawdown AND losing: amplified penalty (v38: 1.75->1.35, less long bias)
+        else:
+            reward = r          # gaining or not in drawdown: symmetric
+
+        # Component 2: Proactive drawdown drag (v16: halved 0.01 → 0.005)
+        # v15 diagnosis: this dominated the reward (-12.97 vs -6.71 for returns).
+        # Brain 1 learned to short to MINIMISE DRAWDOWN rather than maximise returns.
+        # Halving rebalances so return signal is the primary driver.
+        reward -= current_drawdown * 0.005
+
+        # Component 3: VIX-aware cash bonus (v32: REMOVED — was competing with C6)
+        # v31 diagnosis: C3 rewarded cash during bear/risk-off periods (cash×risk_off×0.001).
+        # This directly competed with C6's goal to get the model SHORT in bear, reinforcing
+        # the "cash = safe" local optimum. Combined with C5 saturation, it locked Brain 1
+        # at alpha=+0.99 in cash mode. Removing C3 eliminates the bleed signal.
+        # (Code kept for reference — coefficient zeroed out)
         if hasattr(self, 'has_macro') and self.has_macro and hasattr(self, 'macro_array'):
             macro_score = float(self.macro_array[self.current_step, 3])
-            risk_off_signal = max(0.0, 0.4 - macro_score) / 0.4
-            reward += float(self.current_weights[-1]) * risk_off_signal * 0.001
+            risk_off_signal = max(0.0, 0.52 - macro_score) / 0.52
+            reward += float(self.current_weights[-1]) * risk_off_signal * 0.0  # v32: disabled
 
-        # Component 4: Alpha direction accuracy bonus (v13)
+        # Component 4: Alpha regime-alignment reward (v34 — replaces bar-return version)
         #
-        # Core problem fixed: Brain 1 had a persistent long bias (alpha ≈ +0.4→+0.9
-        # regardless of regime) because P&L outcome alone gives no directional signal.
-        # This component directly rewards correct directional prediction:
-        #   - Positive alpha on a rising asset   → +bonus
-        #   - Positive alpha on a falling asset  → -penalty
-        #   - Negative alpha on a falling asset  → +bonus  (teaches shorting!)
-        #   - Negative alpha on a rising asset   → -penalty
+        # v18–v33 used mean(alpha × sign(next_4h_return)) × 0.003.
+        # Diagnosis: signal was too noisy to teach regime sensitivity.
+        #   Even in a strong bear, 40–45% of 4h bars go UP (dead-cat bounces).
+        #   Net C4 signal in bear for wrong-direction alpha ≈ −0.0006/step — nearly invisible.
+        #   Brain 1 was learning to predict 4h candle direction, not structural regime.
         #
-        # Weighted by |asset_return| so large moves contribute more than noise.
-        # Scale 0.003 ≈ 30% of a typical step return — strong enough to override long bias.
-        # v13 used 0.001 (too weak: shorts improved but BTC/ETH/AVAX longs persisted).
-        # v14 triples the signal so the penalty for longing a falling major is felt clearly.
-        if isinstance(asset_returns, np.ndarray) and asset_returns.sum() != 0:
-            action_signals = action[:self.n_assets]  # Brain 1 alphas, shape (n_assets,)
-            direction_correct = (np.sign(action_signals) == np.sign(asset_returns)).astype(np.float32)
-            abs_returns = np.abs(asset_returns)
-            total_abs = abs_returns.sum()
-            if total_abs > 1e-10:
-                weighted_accuracy = float(np.dot(direction_correct - 0.5, abs_returns) / total_abs)
-            else:
-                weighted_accuracy = 0.0
-            reward += weighted_accuracy * 0.003
+        # v34 fix: measure alpha direction against SMA200 structural regime instead.
+        #   • Fires on ALPHAS directly — no credit-assignment gap through Brain 2
+        #   • Direction-lock cannot shield Brain 1 from this signal (lock runs after Brain 2)
+        #   • Same SMA200 signal as C6 and direction-lock — fully consistent
+        #   • Scaled by |sma_signal| so stronger regimes give stronger gradient
+        #
+        #   bear (sma=-0.15), BTC_alpha=+0.98 (wrong):
+        #     mean(+0.98 × -1) × 0.15 × 0.005 = -0.00074/step  ← direct penalty to Brain 1
+        #   bear (sma=-0.15), BTC_alpha=-0.98 (correct):
+        #     mean(-0.98 × -1) × 0.15 × 0.005 = +0.00074/step  ← direct reward to Brain 1
+        #
+        # Coefficient 0.005 (slightly above old 0.003) to compensate for C6's signal
+        # being partially decoupled from Brain 1 by the direction-lock (v33).
+        # Component 4: Per-asset alpha regime-alignment reward (v38)
+        # v34-v37 used mean(alpha * regime_dir) — Brain 1 gamed it by making 13 alts
+        # strongly negative while keeping BTC positive, averaging out to a "correct" mean.
+        # BTC alpha was +0.66 in a crash and C4 never penalized it because the mean
+        # across all 14 assets was still negative (dominated by the alts).
+        #
+        # Fix (mirrors C6 structure): reward each aligned asset, penalize each wrong one.
+        # Now BTC alpha=+0.66 in bear gets: +0.66 * (-1) = -0.66 → wrong bucket → direct penalty.
+        # Brain 1 can no longer hide BTC's wrong direction behind the other 13 assets.
+        # v40: C4 reverts to SMA200 (crypto_regime col 3) — stays clearly negative for months
+        # in genuine bear markets, giving sustained directional gradient. SMA10/SMA50 were too
+        # noisy (flipped positive on every 1-2 week bounce, causing bull bias in training).
+        # mean/mean fix kept from v39 (removes 14x asymmetry between correct and wrong).
+        action_signals = action[:self.n_assets]
+        if hasattr(self, 'crypto_regime_array') and self.current_step < len(self.crypto_regime_array):
+            _sma_norm_c4 = float(self.crypto_regime_array[self.current_step, 3])
+            _sma_sig_c4  = _sma_norm_c4 - 0.5
+            if abs(_sma_sig_c4) > 0.025:
+                _regime_dir_c4 = np.sign(_sma_sig_c4)
+                _per_asset_c4  = action_signals * _regime_dir_c4   # [14]: +aligned, -wrong
+                _correct_c4    = np.maximum(_per_asset_c4, 0.0)
+                _wrong_c4      = np.minimum(_per_asset_c4, 0.0)
+                reward += abs(_sma_sig_c4) * float(np.mean(_correct_c4)) * 0.005
+                reward += abs(_sma_sig_c4) * float(np.mean(_wrong_c4))   * 0.005
+
+        # Component 5: Alpha entropy regulariser — DROPPED in v35
+        # Conviction scaling in Brain 2 already creates the right gradient: wrong
+        # direction at high conviction costs more, so Brain 1 learns selectivity
+        # without an explicit suppression penalty. C5 was collapsing mean_conviction
+        # to ~0.23 (gross exposure ~14%). Removing it restores natural alpha
+        # magnitudes and ~50% exposure, matching v19's working configuration.
+        # alpha_entropy = -float(np.mean(action_signals ** 2))
+        # reward += alpha_entropy * 0.0005
+
+        # Component 6: Per-asset regime-alignment reward (v31)
+        #
+        # v27 bug: fired on Brain 1 alpha signals (range ±1), not on actual portfolio weights.
+        #   Brain 1 learned to output 5L+9S mixed alphas → earn partial C6 reward on alphas
+        #   → Brain 2 Sortino solver cancels mixed signals → near-zero weights → cash.
+        #   Model gamed the reward: correct INTENTION (alphas) rewarded, zero EXECUTION (weights).
+        #
+        # Fix: fire C6 on self.current_weights[:n_assets] — the actual Brain 2 portfolio
+        # weights — so the reward measures what the model IS DOING, not what Brain 1 signals.
+        # Weights are in [-MAX_PER_ASSET, +MAX_PER_ASSET] = [-0.10, +0.10] per asset, vs
+        # alphas in [-1, +1], so coefficients are scaled up ~10× to preserve reward magnitude.
+        #
+        #   asset_w_i = self.current_weights[i]   (Brain 2 output, after risk gates)
+        #   per_asset = asset_w × regime_dir       (+positive = aligned, -negative = wrong)
+        #   correct   = max(per_asset, 0)
+        #   wrong     = min(per_asset, 0)
+        #
+        #   C6 = |sma| × mean(correct) × 2.0    ← reward actual aligned exposure
+        #      + |sma| × sum(wrong)    × 2.0    ← penalise each wrong-direction asset (v32: 0.20→2.0)
+        #
+        # v32: wrong penalty strengthened from ×0.20 to ×2.0 (10×).
+        # Diagnosis: with ×0.20, the wrong penalty was too weak relative to C1 returns
+        # earned during bull training windows (33% of curriculum). The LSTM learned
+        # "cash is safe" because going to cash removed the C6 penalty without needing
+        # to flip direction. With ×2.0, being wrong in a clear regime costs:
+        #   bear, all-long: 0.15 × sum(14 × 0.057) × 2.0 = -0.239/step (severe)
+        # vs cash at 0 — the asymmetry now strongly favours going SHORT over staying in cash.
+        #
+        # In bear (sma=0.15), ALL SHORT (each asset weight ≈ -0.043 = 0.60/14):
+        #   correct: 0.15 × mean(0.043) × 2.0 = +0.0129/step
+        # In bear (sma=0.15), ALL LONG (each asset weight ≈ +0.057 = 0.80/14):
+        #   wrong:   0.15 × sum(-14×0.057) × 2.0 = -0.239/step  ← severe, not cashable
+        # In cash (all weights=0): C6 = 0 — cash no longer the comfortable middle ground
+        # v40: C6 reverts to SMA200 (crypto_regime col 3) — same reason as C4 above.
+        # SMA200 stays deeply negative for months in real bear markets (2022 crash: ~-0.30),
+        # giving strong sustained penalty for wrong-direction positions.
+        # mean/mean fix kept from v39 (was np.sum for wrong — 14x asymmetry that caused cash-hiding).
+        if hasattr(self, 'crypto_regime_array') and self.current_step < len(self.crypto_regime_array):
+            sma200_norm = float(self.crypto_regime_array[self.current_step, 3])
+            sma_signal  = sma200_norm - 0.5
+            if abs(sma_signal) > 0.025:
+                regime_dir = np.sign(sma_signal)
+                asset_w    = self.current_weights[:self.n_assets]   # Brain 2 weights
+                per_asset  = asset_w * regime_dir    # +aligned, -wrong
+                correct    = np.maximum(per_asset, 0.0)
+                wrong      = np.minimum(per_asset, 0.0)
+                reward += abs(sma_signal) * float(np.mean(correct)) * 2.0
+                reward += abs(sma_signal) * float(np.mean(wrong))   * 2.0
 
         # Keep benchmark return for logging (no longer used in reward)
         if self.benchmark_returns is not None and self.current_step < len(self.benchmark_returns):
@@ -768,7 +1047,7 @@ class FastCryptoEnv(gym.Env):
             'short_exposure'   : short_exposure,
             'cash_weight'      : float(weights[-1]),
             'step'             : int(self.current_step),
-            'reward_type'        : 'asymmetric_bicameral_v14',
+            'reward_type'        : 'asymmetric_bicameral_v16',
             'reward'             : float(reward),
             # Risk gate status (diagnostic)
             'calmar_gate_active' : self.calmar_gate_active,

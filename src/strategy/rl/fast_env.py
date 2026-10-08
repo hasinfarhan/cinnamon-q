@@ -6,6 +6,7 @@ instead of Pandas DataFrames for blazingly fast stepping. Designed for
 parallel training with SubprocVecEnv.
 """
 
+from collections import deque
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
@@ -81,6 +82,26 @@ class FastCryptoEnv(gym.Env):
         # Used to scale borrow rate and cooldown steps to actual calendar time regardless
         # of bar frequency (15-min=96, 4h=6, 1h=24).
         self.bars_per_day = 96
+        # v44 options (defaults reproduce v40/v43 behaviour exactly)
+        self.no_trade_band = 0.0              # (A) min per-asset weight change worth trading
+        self.calmar_regime_release = False    # (B) Gate 1 re-entry requires BTC above its 200-day SMA
+        # v45 options (defaults reproduce earlier behaviour exactly)
+        self.squash_actions = False           # Brain 1 output squashed into (-1, 1) by tanh
+        self.sign_preserving_sizing = False   # (F) Brain 2 never flips Brain 1's sign; one shared scale
+        self.calmar_release_inference_only = False  # (B) applies only when training_mode is False
+        self.calmar_trend_reentry = False     # v47 (G): after the breaker, re-enter only in the trend's direction
+        self.reentry_lock_dir = 0             # G runtime: -1 shorts only, +1 longs only, 0 unrestricted
+        # v47 reward options ('v40' = the C1+C2+C4+C6 reward used up to v46, unchanged)
+        self.reward_mode = 'v40'
+        self.reward_K = 10.0                  # profit multiplier (C1, and C2 scaled with it)
+        self.reward_trend_coef = 0.05         # m: trend-hint weight (C6), chosen by the ranking check
+        self.reward_dd_coef = 0.005           # C2 drawdown drag weight (same as v40, not scaled by K)
+        self.reward_c4_coef = 0.0             # C4 signal hint weight (v40: 0.005; dropped, it is a second trend term)
+        self.reward_trend_min = 0.10          # C6 pays only when |BTC vs 200-day SMA| exceeds this
+        self.reward_loss_aversion = 1.35      # extra weight on a losing week
+        self.reward_loss_window = 42          # bars in the loss-aversion window (42 x 4h = 7 days)
+        self._ret_hist = deque(maxlen=42)
+        self._last_components = None
 
         # Use memory-mapped files if provided, otherwise load from parquet
         if data_config is not None:
@@ -141,7 +162,27 @@ class FastCryptoEnv(gym.Env):
             self.training_mode = data_config.get('training_mode', True)
             # v27: bar frequency — 96 for 15-min (default), 6 for 4h
             self.bars_per_day  = data_config.get('bars_per_day', 96)
-            
+            self.no_trade_band = float(data_config.get('no_trade_band', 0.0))
+            self.calmar_regime_release = bool(data_config.get('calmar_regime_release', False))
+            self.squash_actions = bool(data_config.get('squash_actions', False))
+            self.sign_preserving_sizing = bool(data_config.get('sign_preserving_sizing', False))
+            self.calmar_release_inference_only = bool(data_config.get('calmar_release_inference_only', False))
+            self.calmar_trend_reentry = bool(data_config.get('calmar_trend_reentry', False))
+            self.reward_mode = str(data_config.get('reward_mode', 'v40'))
+            self.reward_K = float(data_config.get('reward_K', 10.0))
+            self.reward_trend_coef = float(data_config.get('reward_trend_coef', 0.05))
+            self.reward_dd_coef = float(data_config.get('reward_dd_coef', 0.005))
+            self.reward_c4_coef = float(data_config.get('reward_c4_coef', 0.0))
+            self.reward_trend_min = float(data_config.get('reward_trend_min', 0.10))
+            self.reward_loss_aversion = float(data_config.get('reward_loss_aversion', 1.35))
+            self.reward_loss_window = int(data_config.get('reward_loss_window', 42))
+            self._ret_hist = deque(maxlen=self.reward_loss_window)
+            # v46: listing mask (coins not yet listed get no weight and no C4/C6 credit) and
+            # episode warm-up length; without an avail array every coin counts as listed.
+            self.avail_array = (np.load(data_config['avail_path'], mmap_mode='r')
+                                if data_config.get('avail_path') else None)
+            self.warmup_bars = int(data_config.get('warmup_bars', 200))
+
             # Load TA arrays if present
             if self.has_ta_features:
                 self.rsi_array = np.load(data_config['rsi_path'], mmap_mode='r')
@@ -193,8 +234,12 @@ class FastCryptoEnv(gym.Env):
         #   -1 = maximum short conviction (expect strong negative return)
         #    0 = neutral / no edge detected
         #   Cash is NOT part of the action — Brain 2 (Sortino Solver) computes it.
+        # v45: with squash_actions the policy acts in a wide raw range and step() maps it
+        # through tanh into (-1, 1). With the old [-1, 1] box, the Gaussian mean drifted far
+        # past the bound and was hard-clipped, so the output stopped responding to inputs.
+        _bound = 5.0 if self.squash_actions else 1.0
         self.action_space = spaces.Box(
-            low=-1.0, high=1.0,
+            low=-_bound, high=_bound,
             shape=(self.n_assets,),
             dtype=np.float32
         )
@@ -454,6 +499,10 @@ class FastCryptoEnv(gym.Env):
         - Cash                     : 1 − gross_exposure  (always ≥ 0)
         """
         alpha = np.clip(alpha_scores, -1.0, 1.0).astype(np.float64)
+        # v46: only listed coins take part (all of them when there is no listing mask)
+        av = self._avail()
+        alpha = np.where(av, alpha, 0.0)
+        idx = np.flatnonzero(av)
 
         # ── Step 1: Semicovariance matrix from recent history ─────────
         # v29: use 20 trading days (not 1). At 4h bars, bars_per_day=6 → W was only
@@ -462,26 +511,29 @@ class FastCryptoEnv(gym.Env):
         W = getattr(self, 'bars_per_day', 96) * 20
         t     = self.current_step
         start = max(0, t - W)
-        hist  = self.returns_array[start:t].astype(np.float64)  # (W, n_assets)
+        hist  = self.returns_array[start:t].astype(np.float64)[:, idx]  # (W, n_listed)
 
-        if len(hist) >= 10:
+        if len(idx) == 0:
+            raw_w = np.zeros(self.n_assets)
+        elif len(hist) >= 10:
             # Downside returns only: set positive returns to 0
-            downside  = np.minimum(hist, 0.0)                   # (W, n_assets)
+            downside  = np.minimum(hist, 0.0)                   # (W, n_listed)
             semi_cov  = (downside.T @ downside) / len(hist)     # (n, n)
             # Tikhonov regularisation — ensures invertibility.
             # Use 10% of the mean diagonal as shrinkage (Ledoit-Wolf inspired)
             # to prevent matrix inverse from blowing up on noisy early signals.
             shrinkage = max(1e-4, 0.10 * float(np.diag(semi_cov).mean()))
-            semi_cov += shrinkage * np.eye(self.n_assets)
+            semi_cov += shrinkage * np.eye(len(idx))
 
             # ── Step 2: Sortino-optimal weights ──────────────────────────────
+            raw_w = np.zeros(self.n_assets)
             try:
                 semi_cov_inv = np.linalg.inv(semi_cov)
-                raw_w = semi_cov_inv @ alpha
+                raw_w[idx] = semi_cov_inv @ alpha[idx]
             except np.linalg.LinAlgError:
                 # Fallback: diagonal Sortino (per-asset downside vol scaling)
                 semi_vols = np.sqrt(np.maximum(np.diag(semi_cov), 1e-8))
-                raw_w     = alpha / semi_vols
+                raw_w[idx] = alpha[idx] / semi_vols
         else:
             # Not enough history yet — fall back to per-asset downside vol
             vol   = self.volatility_array[t].astype(np.float64)
@@ -514,8 +566,26 @@ class FastCryptoEnv(gym.Env):
         MAX_SHORT     = 0.60   # v29: raised from 0.40 → enables 10%+ returns in bear
         MAX_PER_ASSET = 0.10
 
-        # Mean absolute conviction ∈ [0, 1]
-        mean_conviction = float(np.mean(np.abs(alpha)))
+        # Mean absolute conviction ∈ [0, 1] (v46: over listed coins)
+        mean_conviction = float(np.mean(np.abs(alpha[idx]))) if len(idx) else 0.0
+
+        if self.sign_preserving_sizing:
+            # v45 (F): Brain 2 sizes positions but never overrules Brain 1's direction.
+            # Coins whose risk-adjusted weight flipped sign (a hedge) are dropped, and the
+            # whole book is scaled by ONE factor so the long/short balance follows Brain 1.
+            # The limits (80% long, 60% short, 10% per coin) are maximums, not targets.
+            kept  = np.where(np.sign(raw_w) == np.sign(alpha), raw_w, 0.0)
+            total = float(np.abs(kept).sum())
+            w = kept / total * (MAX_LONG * mean_conviction) if total > 1e-8 else np.zeros_like(kept)
+            w = np.clip(w, -MAX_PER_ASSET, MAX_PER_ASSET)
+            longs, shorts = np.clip(w, 0.0, None), np.clip(w, None, 0.0)
+            if longs.sum() > MAX_LONG:
+                longs = longs * (MAX_LONG / longs.sum())
+            if -shorts.sum() > MAX_SHORT:
+                shorts = shorts * (MAX_SHORT / -shorts.sum())
+            weights = (longs + shorts).astype(np.float32)
+            cash    = float(np.clip(1.0 - np.abs(weights).sum(), 0.0, 1.0))
+            return np.concatenate([weights, [cash]]).astype(np.float32)
 
         longs  = np.clip(raw_w,  0.0, None)
         shorts = np.clip(raw_w, None, 0.0)
@@ -535,6 +605,59 @@ class FastCryptoEnv(gym.Env):
         cash    = float(np.clip(1.0 - gross, 0.0, 1.0))
 
         return np.concatenate([weights, [cash]]).astype(np.float32)
+
+    def _reward_profit(self, r: float, drawdown: float, alpha: np.ndarray, av: np.ndarray):
+        """v47 reward = C1 + C2 + C4 + C6, profit-led.
+
+        C1 = K * [ r + (lambda - 1) * min(0, R_week) / W ]
+             r: this bar's net portfolio return (after fees and borrow cost), counted symmetrically;
+             R_week: sum of the last W net returns. Loss aversion applies to a losing WEEK, not to
+             each noisy 4h bar (per-bar loss aversion scored even profitable positions below cash).
+        C2 = -dd_coef * drawdown                        (drawdown drag; 0.005 as in v40)
+        C4 = c4_coef * |s| * mean_listed(alpha * d)     (signal hint; d = sign(s) if |s| > 0.025; default 0)
+        C6 = m * |s| * mean_listed(w * d')              (trend hint; d' = sign(s) only if |s| > trend_min)
+        Defaults (K=10, lambda=1.35/week, dd 0.005, C4 0, m 0.05, |s|>0.10) come from the ranking check on
+        the training years: this reward orders 13 strategies like their Sortino (rho 0.92) and return (0.93);
+        the v40 reward did not (rho 0.03 with return; it ranked the trend rule first).
+        """
+        K, W = self.reward_K, self.reward_loss_window
+        r_week = float(sum(self._ret_hist))
+        c1 = K * (r + (self.reward_loss_aversion - 1.0) * min(0.0, r_week) / W)
+        c2 = -self.reward_dd_coef * drawdown
+        c4 = c6 = 0.0
+        if hasattr(self, 'crypto_regime_array') and self.current_step < len(self.crypto_regime_array):
+            s = float(self.crypto_regime_array[self.current_step, 3]) - 0.5
+            if abs(s) > 0.025:
+                c4 = abs(s) * float(np.mean((alpha * np.sign(s))[av])) * self.reward_c4_coef
+            if abs(s) > self.reward_trend_min:
+                w = np.asarray(self.current_weights[:self.n_assets], dtype=np.float64)
+                c6 = self.reward_trend_coef * abs(s) * float(np.mean((w * np.sign(s))[av]))
+        return c1 + c2 + c4 + c6, {"C1": c1, "C2": c2, "C4": c4, "C6": c6}
+
+    def _avail(self, t=None) -> np.ndarray:
+        """v46: bool [n_assets], True for coins listed (tradable) at step t."""
+        if getattr(self, 'avail_array', None) is None:
+            return np.ones(self.n_assets, dtype=bool)
+        t = self.current_step if t is None else t
+        return np.asarray(self.avail_array[min(t, len(self.avail_array) - 1)], dtype=bool)
+
+    def _apply_no_trade_band(self, weights: np.ndarray) -> np.ndarray:
+        """v44 (A): keep the previously held weight of any asset whose target moved by
+        less than self.no_trade_band, then re-impose _construct_portfolio's exposure caps
+        (mixing kept and new weights can push the long or short book over its cap)."""
+        w = weights.astype(np.float64).copy()
+        prev = np.asarray(self.prev_weights[:-1], dtype=np.float64)
+        keep = np.abs(w[:-1] - prev) < self.no_trade_band
+        w[:-1] = np.where(keep, prev, w[:-1])
+        longs, shorts = np.clip(w[:-1], 0.0, None), np.clip(w[:-1], None, 0.0)
+        long_sum, short_sum = longs.sum(), -shorts.sum()
+        if long_sum > 0.80:
+            longs *= 0.80 / long_sum
+        if short_sum > 0.60:
+            shorts *= 0.60 / short_sum
+        w[:-1] = longs + shorts
+        w[-1] = np.clip(1.0 - np.abs(w[:-1]).sum(), 0.0, 1.0)
+        return w.astype(np.float32)
 
     def _apply_risk_gates(self, weights: np.ndarray) -> np.ndarray:
         """
@@ -589,6 +712,29 @@ class FastCryptoEnv(gym.Env):
                 self.calmar_cooldown_rem = max(0, self.calmar_cooldown_rem - 1)
                 recovered = (self.calmar_cooldown_rem == 0 and
                              drawdown < self.calmar_recovery_threshold)
+                # v45: with calmar_release_inference_only, B is skipped during training so the
+                # agent keeps acting (and learning) through bear markets; it applies at evaluation.
+                _b_active = self.calmar_regime_release and not (
+                    self.calmar_release_inference_only and getattr(self, 'training_mode', True))
+                # v47 (G): same inference-only switch as B; when on, G replaces B
+                _g_active = self.calmar_trend_reentry and not (
+                    self.calmar_release_inference_only and getattr(self, 'training_mode', True))
+                if recovered and _g_active and hasattr(self, 'crypto_regime_array'):
+                    # (G): B kept the book in cash until BTC was back above its 200-day SMA,
+                    # which also locked out shorts for a whole bear market. Instead, re-enter
+                    # once the trend is clear, but only on the trend's side until it flips.
+                    t = min(self.current_step, len(self.crypto_regime_array) - 1)
+                    _sig = float(self.crypto_regime_array[t, 3]) - 0.5
+                    if abs(_sig) <= 0.025:
+                        recovered = False             # no clear trend yet: stay in cash
+                    else:
+                        self.reentry_lock_dir = int(np.sign(_sig))
+                elif recovered and _b_active and hasattr(self, 'crypto_regime_array'):
+                    # v44 (B): the 1-day cooldown alone let losses compound in 15% chunks
+                    # through a bear market. Re-enter only once BTC is back above its
+                    # 200-day SMA (same signal and dead-zone as C4/C6).
+                    t = min(self.current_step, len(self.crypto_regime_array) - 1)
+                    recovered = float(self.crypto_regime_array[t, 3]) - 0.5 > 0.025
                 if recovered:
                     self.calmar_gate_active = False   # resume trading
                 else:
@@ -603,9 +749,23 @@ class FastCryptoEnv(gym.Env):
                 self.calmar_gate_active  = True
                 self.calmar_cooldown_rem = self.calmar_cooldown_steps
                 self.peak_equity         = float(self.portfolio_value)
+                self.reentry_lock_dir    = 0          # (G) a new breach starts a fresh cash period
                 weights[:]  = 0.0
                 weights[-1] = 1.0
                 return weights
+
+            # (G) direction lock after re-entry: drop positions against the trend until it flips
+            if self.reentry_lock_dir != 0 and hasattr(self, 'crypto_regime_array'):
+                t = min(self.current_step, len(self.crypto_regime_array) - 1)
+                _sig = float(self.crypto_regime_array[t, 3]) - 0.5
+                if _sig * self.reentry_lock_dir < -0.025:
+                    self.reentry_lock_dir = 0         # trend flipped: normal trading again
+                else:
+                    if self.reentry_lock_dir < 0:
+                        weights[:-1] = np.minimum(weights[:-1], 0.0)   # bear: shorts only
+                    else:
+                        weights[:-1] = np.maximum(weights[:-1], 0.0)   # bull: longs only
+                    weights[-1] = float(np.clip(1.0 - np.abs(weights[:-1]).sum(), 0.0, 1.0))
 
         # ── Gate 2: Macro Panic Gate ──────────────────────────────────────────
         # v13: SMA200 gate removed — it caused rapid oscillation near the 0.5
@@ -748,7 +908,7 @@ class FastCryptoEnv(gym.Env):
         # market distribution: ~55% bull, ~35% bear, ~9% neutral. Data has enough
         # bear bars (full 2022 crash + 2025 decline) without artificial oversampling.
         # _regime_indices are still computed in __init__ for diagnostic display only.
-        WARMUP = 200
+        WARMUP = getattr(self, 'warmup_bars', 200)   # v46: configurable (200 = old default)
         MIN_EP  = 1000
         if self.n_steps > WARMUP + MIN_EP:
             self.current_step = np.random.randint(WARMUP, self.n_steps - MIN_EP)
@@ -759,6 +919,9 @@ class FastCryptoEnv(gym.Env):
         self.portfolio_value = self.initial_cash
         self.current_weights = np.zeros(self.n_assets + 1, dtype=np.float32)
         self.current_weights[-1] = 1.0
+        self.reentry_lock_dir = 0   # v47 (G)
+        self._ret_hist = deque(maxlen=getattr(self, 'reward_loss_window', 42))   # v47 reward: past week's returns
+        self._last_components = None
         # Phase 5.5: Track previous weights for turnover calculation
         self.prev_weights = self.current_weights.copy()
 
@@ -794,11 +957,21 @@ class FastCryptoEnv(gym.Env):
         if not isinstance(action, np.ndarray):
             action = np.array(action, dtype=np.float32)
         action = action.flatten()[:self.n_assets]   # Brain 1: n_assets signals
+        if self.squash_actions:
+            action = np.tanh(action).astype(np.float32)  # v45: smooth bound, no hard clipping
 
         # Brain 2: Sortino Solver — converts alpha scores → portfolio weights
         weights = self._construct_portfolio(action)
+        # v44 (A): skip trades smaller than the no-trade band (before the gates, so a
+        # gate-forced move to cash is always executed in full)
+        if self.no_trade_band > 0.0:
+            weights = self._apply_no_trade_band(weights)
         # Hard risk gates: Calmar circuit breaker + Macro panic gate
         weights = self._apply_risk_gates(weights)
+        _av = self._avail()
+        if not _av.all():   # v46: never hold a coin that is not listed yet
+            weights[:-1][~_av] = 0.0
+            weights[-1] = float(np.clip(1.0 - np.abs(weights[:-1]).sum(), 0.0, 1.0))
         self.current_weights = weights
         
         # Check termination
@@ -951,6 +1124,7 @@ class FastCryptoEnv(gym.Env):
             if abs(_sma_sig_c4) > 0.025:
                 _regime_dir_c4 = np.sign(_sma_sig_c4)
                 _per_asset_c4  = action_signals * _regime_dir_c4   # [14]: +aligned, -wrong
+                _per_asset_c4  = _per_asset_c4[_av]                   # v46: listed coins only
                 _correct_c4    = np.maximum(_per_asset_c4, 0.0)
                 _wrong_c4      = np.minimum(_per_asset_c4, 0.0)
                 reward += abs(_sma_sig_c4) * float(np.mean(_correct_c4)) * 0.005
@@ -1008,11 +1182,17 @@ class FastCryptoEnv(gym.Env):
             if abs(sma_signal) > 0.025:
                 regime_dir = np.sign(sma_signal)
                 asset_w    = self.current_weights[:self.n_assets]   # Brain 2 weights
-                per_asset  = asset_w * regime_dir    # +aligned, -wrong
+                per_asset  = (asset_w * regime_dir)[_av]   # +aligned, -wrong (v46: listed coins)
                 correct    = np.maximum(per_asset, 0.0)
                 wrong      = np.minimum(per_asset, 0.0)
                 reward += abs(sma_signal) * float(np.mean(correct)) * 2.0
                 reward += abs(sma_signal) * float(np.mean(wrong))   * 2.0
+
+        # v47: profit-led reward (replaces the sum above when reward_mode == 'profit';
+        # the v40 path is left untouched so earlier models train and score exactly as before)
+        self._ret_hist.append(r)
+        if getattr(self, 'reward_mode', 'v40') == 'profit':
+            reward, self._last_components = self._reward_profit(r, current_drawdown, action_signals, _av)
 
         # Keep benchmark return for logging (no longer used in reward)
         if self.benchmark_returns is not None and self.current_step < len(self.benchmark_returns):
@@ -1049,6 +1229,7 @@ class FastCryptoEnv(gym.Env):
             'step'             : int(self.current_step),
             'reward_type'        : 'asymmetric_bicameral_v16',
             'reward'             : float(reward),
+            'reward_components'  : self._last_components,   # v47: dict for reward_mode 'profit', else None
             # Risk gate status (diagnostic)
             'calmar_gate_active' : self.calmar_gate_active,
             'calmar_cooldown_rem': self.calmar_cooldown_rem,

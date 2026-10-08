@@ -6,7 +6,7 @@ Runs the trained RecurrentPPO (LSTM) model on a held-out test period
 
 Benchmarks:
   - Buy-and-hold BTC
-  - Equal-weight (all 17 assets, rebalanced each step)
+  - Equal-weight (all 14 assets, rebalanced each step)
 
 Metrics (all annualised where appropriate):
   - Total Return
@@ -26,6 +26,7 @@ Outputs:
 """
 
 import io
+import json
 import os
 import sys
 import shutil
@@ -60,11 +61,24 @@ from strategy.rl.data_loader import prepare_training_data
 from strategy.rl.fast_env import FastCryptoEnv
 
 # ── Config ─────────────────────────────────────────────────
-MODEL_PATH    = project_root / "models" / "hdrl_worldclass_v40" / "final_model.zip"
-VECNORM_PATH  = project_root / "models" / "hdrl_worldclass_v40" / "vec_normalize.pkl"
+# v43: paths are overridable via environment variables so the same script can
+# reproduce v40 and evaluate v43 from a separate worktree. Defaults are v40's.
+MODEL_DIR     = Path(os.environ.get("CQ_MODEL_DIR", project_root / "models" / "hdrl_worldclass_v40"))
+MODEL_PATH    = MODEL_DIR / "final_model.zip"
+VECNORM_PATH  = MODEL_DIR / "vec_normalize.pkl"
 _v5 = project_root / "data" / "processed" / "crypto_deep_v5.parquet"
-DATA_PATH     = _v5 if _v5.exists() else project_root / "data" / "processed" / "crypto_deep_v4_sentiment.parquet"
-REPORT_DIR    = project_root / "reports" / "backtest_v40"
+DATA_PATH     = Path(os.environ.get("CQ_DATA_PATH",
+                    _v5 if _v5.exists() else project_root / "data" / "processed" / "crypto_deep_v4_sentiment.parquet"))
+REPORT_DIR    = Path(os.environ.get("CQ_REPORT_DIR", project_root / "reports" / "backtest_v40"))
+# v43: if training recorded a holdout, reuse its training-only normalization ranges
+# and verify the test window starts exactly where training data stopped.
+_holdout_file = MODEL_DIR / "holdout.json"
+HOLDOUT = json.loads(_holdout_file.read_text()) if _holdout_file.exists() else None
+FIT_END = os.environ.get("CQ_FIT_END") or (HOLDOUT["train_end"] if HOLDOUT else None)
+# Diagnostic only: evaluate on a custom window instead of the held-out test year.
+# Results on such a window may be IN-SAMPLE and must not be reported as test results.
+EVAL_START = os.environ.get("CQ_EVAL_START")
+EVAL_END   = os.environ.get("CQ_EVAL_END")
 INITIAL_CASH  = 100_000.0
 TEST_FRACTION = 0.20          # last 20% = held-out test set
 BARS_PER_YEAR = 365.25 * 6   # 4h bars per year (v27)
@@ -92,7 +106,10 @@ print(f"  Model action shape: {action_shape}")
 print("\n[2/6] Preparing data arrays (this takes ~2 min for 1.5M rows)...")
 temp_dir = Path(tempfile.mkdtemp(prefix="backtest_"))
 try:
-    data_cfg = prepare_training_data(DATA_PATH, temp_dir, resample_freq='4h')
+    print(f"  Data file   : {DATA_PATH}")
+    print(f"  Model dir   : {MODEL_DIR}")
+    data_cfg = prepare_training_data(DATA_PATH, temp_dir, resample_freq='4h', fit_end=FIT_END,
+                                     **((HOLDOUT or {}).get('loader_options') or {}))
     n_steps  = data_cfg["n_steps"]
     n_assets = data_cfg["n_assets"]
     assets   = data_cfg["asset_list"]
@@ -102,11 +119,29 @@ try:
 
     # ── Train / test split ─────────────────────────────────
     split_at   = int(n_steps * (1 - TEST_FRACTION))
-    n_test     = n_steps - split_at
+    # v46: the test year starts right after the model's recorded training end (the 80/20 rule
+    # only coincided with it for v5's 5-year file); the assertions below still verify it
+    if HOLDOUT and HOLDOUT.get("split_at"):
+        split_at = int(HOLDOUT["split_at"])
+    eval_end   = n_steps
+    if EVAL_START:
+        _ts = pd.to_datetime(pd.Series(timestamps))
+        split_at = int((_ts >= pd.Timestamp(EVAL_START)).idxmax())
+        eval_end = int((_ts <= pd.Timestamp(EVAL_END)).sum()) if EVAL_END else n_steps
+        _out_of_sample = bool(HOLDOUT) and pd.Timestamp(timestamps[split_at]) > pd.Timestamp(HOLDOUT["train_end"])
+        print(f"\n  [!!] CUSTOM EVALUATION WINDOW {EVAL_START} -> {EVAL_END} "
+              + ("(OUT-OF-SAMPLE: starts after the model's last training bar "
+                 f"{HOLDOUT['train_end']})" if _out_of_sample else "(IN-SAMPLE diagnostic only)"))
+    n_test     = eval_end - split_at
     train_end  = pd.Timestamp(timestamps[split_at - 1])
     test_start = pd.Timestamp(timestamps[split_at])
-    test_end   = pd.Timestamp(timestamps[-1])
+    test_end   = pd.Timestamp(timestamps[eval_end - 1])
     days_test  = (test_end - test_start).total_seconds() / 86400
+
+    if HOLDOUT and not EVAL_START:
+        assert str(train_end) == HOLDOUT["train_end"], f"train_end {train_end} != recorded {HOLDOUT['train_end']}"
+        assert str(test_start) == HOLDOUT["test_start"], f"test_start {test_start} != recorded {HOLDOUT['test_start']}"
+        print(f"  [HOLDOUT] verified: model was trained only on data up to {HOLDOUT['train_end']}")
 
     print(f"\n  Train period  : up to {train_end.date()}")
     print(f"  Test period   : {test_start.date()} -> {test_end.date()} ({days_test:.0f} days, {n_test:,} steps)")
@@ -118,7 +153,7 @@ try:
 
     def _slice_and_save(src_path: str, name: str) -> str:
         arr = np.load(src_path, mmap_mode="r")
-        sliced = np.array(arr[split_at:], dtype=np.float32)
+        sliced = np.array(arr[split_at:eval_end], dtype=np.float32)
         out = str(test_dir / name)
         np.save(out, sliced)
         return out
@@ -137,7 +172,7 @@ try:
         "atr_path"       : _slice_and_save(data_cfg["atr_path"],        "atr_array.npy"),
         "sma_ratio_path" : _slice_and_save(data_cfg["sma_ratio_path"],  "sma_ratio_array.npy"),
         "asset_list"     : assets,
-        "timestamps"     : timestamps[split_at:],
+        "timestamps"     : timestamps[split_at:eval_end],
         "n_steps"        : n_test,
         "n_assets"       : n_assets,
         "has_ta_features": data_cfg.get("has_ta_features", False),
@@ -151,12 +186,23 @@ try:
         "ret_1d_path"        : _slice_and_save(data_cfg["ret_1d_path"],        "ret_1d_array.npy")        if data_cfg.get("has_mtf") else "",
         "ret_7d_path"        : _slice_and_save(data_cfg["ret_7d_path"],        "ret_7d_array.npy")        if data_cfg.get("has_mtf") else "",
         "crypto_regime_path" : _slice_and_save(data_cfg["crypto_regime_path"], "crypto_regime_array.npy") if data_cfg.get("has_mtf") else "",
+        # v46: listing mask must be cut to the same window (else every coin counts as listed)
+        "avail_path"         : _slice_and_save(data_cfg["avail_path"], "avail_array.npy") if data_cfg.get("avail_path") else "",
         # v26: Gate 3 (Regime Uncertainty Gate) is inference-only — activate it here
         "training_mode"      : False,
         # bars_per_day: needed for correct borrow rate and Calmar cooldown in fast_env.
         # Without this the env defaults to 96 (15-min), giving 16× wrong borrow rate.
         "bars_per_day"       : data_cfg.get("bars_per_day", 6),
     }
+    # v44: evaluate under the same environment options the model was trained with
+    if HOLDOUT and HOLDOUT.get("env_options"):
+        test_cfg.update(HOLDOUT["env_options"])
+        print(f"  Env options : {HOLDOUT['env_options']}")
+    # v47: evaluation-only rule changes (e.g. '{"calmar_trend_reentry": true}') without retraining
+    ENV_OVERRIDE = json.loads(os.environ["CQ_ENV_OVERRIDE"]) if os.environ.get("CQ_ENV_OVERRIDE") else {}
+    if ENV_OVERRIDE:
+        test_cfg.update(ENV_OVERRIDE)
+        print(f"  [!!] Env override (evaluation only): {ENV_OVERRIDE}")
     print(f"  TA features : {test_cfg['has_ta_features']}")
     print(f"  Correlation : {test_cfg['has_correlation']}")
     print(f"  GARCH       : {test_cfg['has_garch']}")
@@ -233,6 +279,7 @@ try:
     portfolio_values = [INITIAL_CASH]
     step_returns     = []
     allocations      = []     # store per-step weight vectors for analysis
+    diagnostics      = []     # v43: per-step exposures, costs, long/short P&L
     step_timestamps  = [timestamps[split_at]]
 
     step = 0
@@ -252,8 +299,59 @@ try:
         step_returns.append(float(reward))
         allocations.append(test_env.current_weights.copy())
 
+        # v43 diagnostics: per-step exposures, costs and long/short P&L split.
+        # The env has already advanced, so this step's asset returns are price[t]/price[t-1]-1.
+        # (the terminal step returns early without exposure info, so it is skipped)
+        if "long_exposure" in info:
+            _t  = test_env.current_step
+            _px = test_env.price_array
+            _w  = np.asarray(test_env.prev_weights[:-1], dtype=np.float64)   # weights actually held this step
+            _prev = np.where(_px[_t - 1] > 1e-8, _px[_t - 1], 1.0)
+            _r  = np.where(_px[_t - 1] > 1e-8, _px[_t] / _prev - 1.0, 0.0)
+            diagnostics.append({
+                "long_exposure":     float(info["long_exposure"]),
+                "short_exposure":    float(info.get("short_exposure", np.nan)),
+                "cash_weight":       float(info.get("cash_weight", np.nan)),
+                "turnover":          float(info.get("turnover", np.nan)),
+                "transaction_cost":  float(info.get("transaction_cost", np.nan)),
+                "short_borrow_cost": float(info.get("short_borrow_cost", np.nan)),
+                "gross_return":      float(info.get("gross_return", np.nan)),
+                "long_pnl":          float(np.sum(np.maximum(_w, 0.0) * _r)),
+                "short_pnl":         float(np.sum(np.minimum(_w, 0.0) * _r)),
+                "calmar_gate":       bool(getattr(test_env, "calmar_gate_active", False)),
+                "reentry_lock":      int(getattr(test_env, "reentry_lock_dir", 0)),
+                "btc_sma200_sig":    float(test_env.crypto_regime_array[_t, 3]) - 0.5,
+            })
+            # Reward decomposition, mirroring fast_env.step() (v40 code): the reward at
+            # step t uses index t-1 (the env increments current_step after computing it).
+            _raw = np.asarray(action, dtype=np.float64).flatten()[:len(_w)]
+            _a   = np.tanh(_raw) if getattr(test_env, "squash_actions", False) else np.clip(_raw, -1.0, 1.0)
+            _nr  = float(info["portfolio_return"])
+            _dd  = float(info["current_drawdown"])
+            _s   = float(test_env.crypto_regime_array[_t - 1, 3]) - 0.5
+            _c1  = _nr * 1.35 if (_nr < 0.0 and _dd > 0.005) else _nr
+            _c2  = -_dd * 0.005
+            _c4 = _c6 = 0.0
+            if abs(_s) > 0.025:
+                _d  = np.sign(_s)
+                _m  = test_env._avail(_t - 1)          # v46: C4/C6 average over listed coins, as in the env
+                _c4 = abs(_s) * (np.mean(np.maximum(_a[_m] * _d, 0.0)) + np.mean(np.minimum(_a[_m] * _d, 0.0))) * 0.005
+                _wc = np.asarray(test_env.current_weights[:len(_w)], dtype=np.float64)[_m]
+                _c6 = abs(_s) * (np.mean(np.maximum(_wc * _d, 0.0)) + np.mean(np.minimum(_wc * _d, 0.0))) * 2.0
+            # v47: a model trained with the profit-led reward reports its own components
+            if info.get("reward_components"):
+                _rc = info["reward_components"]
+                _c1, _c2, _c4, _c6 = _rc["C1"], _rc["C2"], _rc["C4"], _rc["C6"]
+            diagnostics[-1].update({
+                "timestamp": str(test_env.timestamps[_t - 1]), "net_return": _nr, "drawdown": _dd,
+                "mean_abs_alpha": float(np.mean(np.abs(_a[test_env._avail(_t - 1)]))),
+                "net_alpha": float(np.mean(_a[test_env._avail(_t - 1)])),
+                "n_listed": int(test_env._avail(_t - 1).sum()),
+                "sig_used": _s, "C1": _c1, "C2": _c2, "C4": _c4, "C6": _c6, "env_reward": float(reward),
+            })
+
         step += 1
-        if step < len(timestamps) - split_at:
+        if step < eval_end - split_at:
             step_timestamps.append(timestamps[split_at + step])
 
         if step % 2000 == 0:
@@ -279,7 +377,12 @@ try:
     btc_equity  = INITIAL_CASH * np.cumprod(1 + btc_returns)
     btc_equity  = np.concatenate([[INITIAL_CASH], btc_equity])
 
-    eq_returns = _test_rets.mean(axis=1)
+    # v46: equal weight over the coins listed at each bar (all 14 for v5 / the test year)
+    if test_cfg.get("avail_path"):
+        _av = np.load(test_cfg["avail_path"]) > 0.5
+        eq_returns = (_test_rets * _av).sum(axis=1) / np.maximum(_av.sum(axis=1), 1)
+    else:
+        eq_returns = _test_rets.mean(axis=1)
     eq_equity  = INITIAL_CASH * np.cumprod(1 + eq_returns)
     eq_equity  = np.concatenate([[INITIAL_CASH], eq_equity])
 
@@ -326,7 +429,7 @@ try:
     results = [
         compute_metrics(pv_arr,  "LSTM PPO (Ours)"),
         compute_metrics(btc_arr, "Buy-and-Hold BTC"),
-        compute_metrics(eq_arr,  "Equal-Weight (17 assets)"),
+        compute_metrics(eq_arr,  "Equal-Weight (14 assets)"),
     ]
 
     perf_df = pd.DataFrame(results).set_index("Strategy")
@@ -361,6 +464,8 @@ try:
     curves_df.index.name = "timestamp"
     curves_df.to_csv(REPORT_DIR / "portfolio_values.csv")
     print(f"  Saved: {REPORT_DIR / 'portfolio_values.csv'}")
+    pd.DataFrame(diagnostics).to_csv(REPORT_DIR / "diagnostics.csv", index_label="step")
+    print(f"  Saved: {REPORT_DIR / 'diagnostics.csv'}")
 
     # ── Save summary text ─────────────────────────────────
     summary_lines = [
@@ -369,7 +474,11 @@ try:
         f"Test period : {test_start.date()} to {test_end.date()} ({days_test:.0f} days)",
         f"Steps       : {n_test:,}  (4h bars)",
         f"Assets      : {n_assets} ({', '.join(assets)})",
-        f"Model       : RecurrentPPO LSTM, 500k training steps, Gemini LLM utility scores",
+        f"Model       : {MODEL_DIR.name}, RecurrentPPO LSTM, {model.num_timesteps:,} training steps",
+        f"Holdout     : " + (f"trained only on data up to {HOLDOUT['train_end']}" if HOLDOUT
+                             else "none recorded (model may have been trained on the full dataset)"),
+        f"Data file   : {DATA_PATH.name}",
+        *( [f"Override    : {ENV_OVERRIDE} (evaluation-only rule change)"] if ENV_OVERRIDE else [] ),
         "",
         perf_df.to_string(),
         "",
@@ -377,7 +486,7 @@ try:
     ]
     our_row = perf_df.loc["LSTM PPO (Ours)"]
     btc_row = perf_df.loc["Buy-and-Hold BTC"]
-    eq_row  = perf_df.loc["Equal-Weight (17 assets)"]
+    eq_row  = perf_df.loc["Equal-Weight (14 assets)"]
     summary_lines += [
         f"  Our total return   : {our_row['Total Return (%)']:+.2f}%",
         f"  BTC total return   : {btc_row['Total Return (%)']:+.2f}%",
@@ -407,7 +516,7 @@ try:
         fig, ax = plt.subplots(figsize=(14, 6))
         ax.plot(ts_plot, curves_df["LSTM_PPO"],    label="LSTM PPO (Ours)",        linewidth=2,   color="#2196F3")
         ax.plot(ts_plot, curves_df["BTC_BuyHold"], label="Buy-and-Hold BTC",        linewidth=1.5, color="#FF9800", linestyle="--")
-        ax.plot(ts_plot, curves_df["EqualWeight"], label="Equal-Weight (17 assets)", linewidth=1.5, color="#4CAF50", linestyle=":")
+        ax.plot(ts_plot, curves_df["EqualWeight"], label="Equal-Weight (14 assets)", linewidth=1.5, color="#4CAF50", linestyle=":")
         ax.axhline(INITIAL_CASH, color="gray", linewidth=0.8, linestyle="-", alpha=0.5, label="Initial capital")
         ax.set_title("Portfolio Equity Curve — Test Period (Out-of-Sample)", fontsize=14, fontweight="bold")
         ax.set_xlabel("Date")
@@ -449,7 +558,7 @@ try:
         fig, ax = plt.subplots(figsize=(14, 5))
         ax.plot(ts_plot, pv_arr[:min_len]  / INITIAL_CASH, label="LSTM PPO (Ours)",        linewidth=2,   color="#2196F3")
         ax.plot(ts_plot, btc_arr[:min_len] / INITIAL_CASH, label="Buy-and-Hold BTC",        linewidth=1.5, color="#FF9800", linestyle="--")
-        ax.plot(ts_plot, eq_arr[:min_len]  / INITIAL_CASH, label="Equal-Weight (17 assets)", linewidth=1.5, color="#4CAF50", linestyle=":")
+        ax.plot(ts_plot, eq_arr[:min_len]  / INITIAL_CASH, label="Equal-Weight (14 assets)", linewidth=1.5, color="#4CAF50", linestyle=":")
         ax.axhline(1.0, color="gray", linewidth=0.8, linestyle="-", alpha=0.5)
         ax.set_title("Growth of $1 — Test Period (Out-of-Sample)", fontsize=14, fontweight="bold")
         ax.set_xlabel("Date")

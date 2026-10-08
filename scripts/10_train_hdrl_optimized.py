@@ -24,8 +24,10 @@ from typing import Optional
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root / "src"))
 
+import json
 import torch
 import numpy as np
+import pandas as pd
 from sb3_contrib import RecurrentPPO  # LSTM support
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize, DummyVecEnv
 from stable_baselines3.common.env_util import make_vec_env
@@ -124,7 +126,42 @@ def main():
     v1_data_path = project_root / "data" / "processed" / "crypto_training_data.parquet"
     master_data_path = project_root / "data" / "processed" / "crypto_deep_master.parquet"
 
-    if v5_path.exists():
+    # v43: v40's exact configuration retrained without look-ahead. This script runs
+    # from a separate worktree at the v40 commit; data and outputs live in the main repo.
+    MAIN_REPO = Path(r"C:\E\trading_thesis\cinnamon-q")
+    # v46: dataset file is selectable (default: v5_clean, as for v43-v45)
+    v43_data_path = MAIN_REPO / "data" / "processed" / os.environ.get("CQ_DATA_FILE", "crypto_deep_v5_clean.parquet")
+    # Run settings (env vars). Defaults reproduce v43 exactly.
+    RUN_NAME       = os.environ.get("CQ_MODEL_NAME", "hdrl_worldclass_v43")
+    TRAIN_END      = os.environ.get("CQ_TRAIN_END", "2025-06-24 20:00:00")  # last training bar
+    RUN_SEED       = int(os.environ.get("CQ_SEED", "42"))
+    TOTAL_STEPS    = int(os.environ.get("CQ_TOTAL_STEPS", "2000000"))
+    CKPT_FREQ      = int(os.environ.get("CQ_CKPT_FREQ", "512"))
+    ENV_OPTIONS    = {
+        "no_trade_band":         float(os.environ.get("CQ_NO_TRADE_BAND", "0.0")),         # v44 (A)
+        "calmar_regime_release": os.environ.get("CQ_CALMAR_REGIME_RELEASE", "0") == "1",  # v44 (B)
+        "squash_actions":        os.environ.get("CQ_SQUASH", "0") == "1",                  # v45 (1,2)
+        "sign_preserving_sizing": os.environ.get("CQ_SIGN_PRESERVE", "0") == "1",          # v45 (F: 3,4)
+        "calmar_release_inference_only": os.environ.get("CQ_B_INFERENCE_ONLY", "0") == "1",  # v45 (5)
+        "warmup_bars":           int(os.environ.get("CQ_WARMUP", "200")),                  # v46: episode start >= this bar
+        "calmar_trend_reentry":  os.environ.get("CQ_TREND_REENTRY", "0") == "1",            # v47 (G), evaluation only
+        "reward_mode":           os.environ.get("CQ_REWARD_MODE", "v40"),                    # v47: 'profit' = profit-led reward
+        "reward_K":              float(os.environ.get("CQ_REWARD_K", "10")),
+        "reward_trend_coef":     float(os.environ.get("CQ_REWARD_TREND_COEF", "0.05")),
+        "reward_dd_coef":        float(os.environ.get("CQ_REWARD_DD_COEF", "0.005")),
+        "reward_c4_coef":        float(os.environ.get("CQ_REWARD_C4_COEF", "0.0")),
+        "reward_trend_min":      float(os.environ.get("CQ_REWARD_TREND_MIN", "0.10")),
+        "reward_loss_aversion":  float(os.environ.get("CQ_REWARD_LOSS_AVERSION", "1.35")),
+        "reward_loss_window":    int(os.environ.get("CQ_REWARD_LOSS_WINDOW", "42")),
+    }
+    # v46: loader options (recorded in holdout.json so evaluation preprocesses identically)
+    LOADER_OPTIONS = {"clip_pct": float(os.environ["CQ_CLIP_PCT"]) if os.environ.get("CQ_CLIP_PCT") else None}
+    LOG_STD_INIT = os.environ.get("CQ_LOG_STD_INIT")  # v45: initial exploration noise (None = default 0.0)
+
+    if v43_data_path.exists():
+        data_path = v43_data_path
+        print(f"[OK] Using {data_path.name} (macro + sentiment lagged one day)")
+    elif v5_path.exists():
         data_path = v5_path
         print("[OK] Using crypto_deep_v5.parquet (5-year dataset Jan 2021->now, all features) - V35 MODE!")
     elif v4_sentiment_path.exists():
@@ -161,7 +198,15 @@ def main():
     # Phase 5.6: Fortress Brain (v2) -> hdrl_fortress_v1
     # Phase 5.2: Super Brain (v2) -> hdrl_super_brain (legacy)
     # Phase 5.1: Regular LSTM (v1) -> hdrl_lstm
-    if use_embeddings:
+    if data_path == v43_data_path:
+        model_dir = MAIN_REPO / "models" / RUN_NAME
+        log_dir = MAIN_REPO / "logs" / f"training_{RUN_NAME}"
+        if RUN_NAME == "hdrl_worldclass_v43":
+            log_dir = MAIN_REPO / "logs" / "hdrl_training_worldclass_v43"
+        print(f"  MODEL {RUN_NAME}: v40 configuration, trained only on data up to {TRAIN_END}, leak-free inputs")
+        print(f"  seed={RUN_SEED} total_steps={TOTAL_STEPS:,} env_options={ENV_OPTIONS}")
+        print(f"  Model directory: {model_dir}")
+    elif use_embeddings:
         model_dir = project_root / "models" / "hdrl_multimodal_v1"
         log_dir = project_root / "logs" / "hdrl_training_multimodal_v1"
         print("  Research Track: Multimodal Brain mode (Embeddings + Market Features)!")
@@ -220,7 +265,11 @@ def main():
     print(f"  Temporary directory: {temp_dir}")
     
     try:
-        data_config = prepare_training_data(data_path, temp_dir, resample_freq='4h')
+        # v43: min-max normalization ranges fitted on training rows only.
+        # Must equal the last training timestamp; the holdout block below asserts this.
+        data_config = prepare_training_data(
+            data_path, temp_dir, resample_freq='4h',
+            fit_end=TRAIN_END if data_path == v43_data_path else None, **LOADER_OPTIONS)
         data_load_time = time.time() - start_data_load
         
         # Validation: Count features per asset
@@ -255,7 +304,47 @@ def main():
         print(f"[ERR] Error: Dataset not found: {data_path}")
         print("Please run scripts/09_generate_sentiment.py first.")
         sys.exit(1)
-    
+
+    # ── v43: hold out the test period from training ───────────────────────
+    # scripts/11_backtest.py evaluates on the last TEST_FRACTION of bars. Training must
+    # never see them, so every time-indexed array is physically truncated before any
+    # environment is built (v40 trained on the full file, test year included).
+    if data_path == v43_data_path:
+        full_n   = data_config['n_steps']
+        # Cut after the last bar at or before TRAIN_END (default = the v43 split, bar 8760).
+        split_at = int((pd.to_datetime(pd.Series(data_config['timestamps'])) <= pd.Timestamp(TRAIN_END)).sum())
+        train_dir = temp_dir / "train_only"
+        train_dir.mkdir(exist_ok=True)
+        sliced = []
+        for key, val in list(data_config.items()):
+            if isinstance(val, str) and val.endswith('.npy'):
+                arr = np.load(val, mmap_mode='r')
+                assert arr.shape[0] == full_n, f"{key}: length {arr.shape[0]} != {full_n}"
+                out = str(train_dir / Path(val).name)
+                np.save(out, np.array(arr[:split_at]))
+                data_config[key] = out
+                sliced.append(key)
+        train_end_ts   = pd.Timestamp(data_config['timestamps'][split_at - 1])
+        held_out_start = pd.Timestamp(data_config['timestamps'][split_at])
+        data_config['timestamps'] = data_config['timestamps'][:split_at]
+        data_config['n_steps'] = split_at
+        assert str(train_end_ts) == TRAIN_END, \
+            f"normalization was fitted up to {TRAIN_END} but training ends {train_end_ts}"
+        assert pd.Timestamp(data_config['timestamps'][-1]) < held_out_start
+        for key in sliced:
+            assert np.load(data_config[key], mmap_mode='r').shape[0] == split_at, key
+        print(f"  [HOLDOUT] sliced {len(sliced)} arrays: {sliced}")
+        print(f"  [HOLDOUT] training data ends {train_end_ts}; "
+              f"held out from {held_out_start} ({full_n - split_at} bars)")
+        # v44 options travel with the data_config into every training env
+        data_config.update(ENV_OPTIONS)
+        (model_dir / "holdout.json").write_text(json.dumps({
+            "train_end": str(train_end_ts), "test_start": str(held_out_start),
+            "n_steps_full": int(full_n), "split_at": int(split_at),
+            "data_file": data_path.name, "seed": RUN_SEED, "total_steps": TOTAL_STEPS,
+            "env_options": ENV_OPTIONS, "log_std_init": LOG_STD_INIT, "loader_options": LOADER_OPTIONS,
+        }, indent=2))
+
     # --- PARALLELIZATION CONFIG ---
     # Use DummyVecEnv with 4 envs - faster iteration during v10 development
     n_envs = 4
@@ -403,7 +492,9 @@ def main():
             n_lstm_layers=1,
             enable_critic_lstm=False  # Disable critic LSTM to save compute
         )
-        
+        if LOG_STD_INIT is not None:
+            policy_kwargs["log_std_init"] = float(LOG_STD_INIT)  # v45: e.g. -1.0 -> noise std 0.37
+
         print(f"  Policy: MlpLstmPolicy (LSTM with Memory)")
         print(f"  n_steps (BPTT window): {n_steps} steps = {n_steps * 4:.0f} hours ~ {n_steps * 4 / 24:.0f} days  (4h bars)")
         print(f"  batch_size: {batch_size}")
@@ -469,6 +560,7 @@ def main():
                 vf_coef=0.5,
                 max_grad_norm=0.5,
                 policy_kwargs=policy_kwargs,
+                seed=RUN_SEED,  # v43: fixed seed for reproducibility (v40 had none)
                 tensorboard_log=str(tensorboard_dir) if _check_tensorboard() else None
             )
     
@@ -483,7 +575,7 @@ def main():
     # save_freq must be a multiple of (n_steps * n_envs) = 256 to actually trigger
     # 512 = every 2 rollouts (~every 2 minutes), ensures we never lose much progress
     checkpoint_callback = CheckpointCallback(
-        save_freq=512,
+        save_freq=CKPT_FREQ,
         save_path=str(model_dir),
         name_prefix="hdrl_crypto_lstm",
         verbose=1
@@ -502,7 +594,7 @@ def main():
     # Total timesteps: 10M for thorough training
     # With 16 parallel envs and LSTM sequences, this may take longer than MLP
     # LSTM processes sequences, so effective training is deeper
-    total_timesteps = 2_000_000  # v16: alpha-weighted reward + bull 3x oversample + macro recalib (2M ~ 80 min)
+    total_timesteps = TOTAL_STEPS  # v44: from CQ_TOTAL_STEPS (default 2M). v16: alpha-weighted reward + bull 3x oversample + macro recalib (2M ~ 80 min)
     
     start_time = time.time()
     

@@ -8,13 +8,31 @@ processing, and pickling overhead when using SubprocVecEnv.
 """
 
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 
 
-def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
+def _fit_range(df: pd.DataFrame, col: str, fit_end: Optional[str], clip_pct: Optional[float] = None):
+    """Per-asset (min, max) of `col`, fitted only on rows up to `fit_end` when it is given.
+
+    With fit_end=None this equals groupby('ticker')[col].transform('min'/'max').
+    v46: with clip_pct (e.g. 0.5) the range is the clip_pct / (100 - clip_pct) percentiles
+    instead of min/max, so one extreme event does not set the scale; the caller clips the
+    scaled value to [0, 1].
+    """
+    src = df if fit_end is None else df[pd.to_datetime(df['timestamp']) <= pd.Timestamp(fit_end)]
+    if clip_pct:
+        g = src.groupby('ticker')[col]
+        stats = pd.DataFrame({'min': g.quantile(clip_pct / 100.0), 'max': g.quantile(1.0 - clip_pct / 100.0)})
+    else:
+        stats = src.groupby('ticker')[col].agg(['min', 'max'])
+    return df['ticker'].map(stats['min']), df['ticker'].map(stats['max'])
+
+
+def prepare_training_data(data_path: Path, temp_dir: Path, resample_freq: Optional[str] = None,
+                          fit_end: Optional[str] = None, clip_pct: Optional[float] = None) -> Dict:
     """
     Load and preprocess crypto training data, save to disk for memory-mapped access.
     
@@ -52,12 +70,52 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
             "Please run scripts/12_enrich_data.py to generate crypto_deep_v2.parquet with TA features."
         )
     
-    print("📊 Loading and optimizing crypto training data (Main Process)...")
-    
+    print("[*] Loading and optimizing crypto training data (Main Process)...")
+
     # Load parquet file
     df = pd.read_parquet(data_path)
     df = df.sort_values(['timestamp', 'ticker']).reset_index(drop=True)
-    
+
+    # Optional resampling to lower frequency (e.g. '4H' reduces 15-min bars to 4h bars)
+    # Closes are taken as the last bar of each period; volumes summed; everything else last.
+    if resample_freq is not None:
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        dfs = []
+        for ticker, grp in df.groupby('ticker', sort=False):
+            g = grp.set_index('timestamp')
+            agg = {}
+            for col in g.columns:
+                cl = col.lower()
+                if cl == 'open':            agg[col] = 'first'
+                elif cl == 'high':          agg[col] = 'max'
+                elif cl == 'low':           agg[col] = 'min'
+                elif 'volume' in cl:        agg[col] = 'sum'
+                else:                       agg[col] = 'last'
+            r = g.resample(resample_freq).agg(agg).dropna(subset=['close'])
+            r['ticker'] = ticker
+            dfs.append(r.reset_index())
+        df = pd.concat(dfs, ignore_index=True)
+        df = df.sort_values(['timestamp', 'ticker']).reset_index(drop=True)
+        print(f"  Resampled to {resample_freq}: {len(df['timestamp'].unique()):,} timestamps")
+
+    # Bars per day (used by fast_env for borrow rate and cooldown timing)
+    _freq = (resample_freq or '').lower()
+    if   _freq in ('4h',):  bars_per_day = 6
+    elif _freq in ('1h',):  bars_per_day = 24
+    elif _freq in ('1d',):  bars_per_day = 1
+    else:                   bars_per_day = 96   # default: 15-min
+
+    # Multi-timeframe window sizes scale with bar frequency
+    if bars_per_day == 6:    # 4h bars
+        mtf_windows = [(1, 'ret_4h', 0.02), (6, 'ret_1d', 0.05), (42, 'ret_7d', 0.15)]
+        crypto_1d_w, crypto_7d_w = 6, 42
+    elif bars_per_day == 24:  # 1h bars
+        mtf_windows = [(4, 'ret_4h', 0.02), (24, 'ret_1d', 0.05), (168, 'ret_7d', 0.15)]
+        crypto_1d_w, crypto_7d_w = 24, 168
+    else:                     # 15-min bars (default)
+        mtf_windows = [(16, 'ret_4h', 0.02), (96, 'ret_1d', 0.05), (672, 'ret_7d', 0.15)]
+        crypto_1d_w, crypto_7d_w = 96, 672
+
     # Check if TA features are present
     ta_columns = ['RSI_14', 'MACD', 'BB_WIDTH', 'ATR_NORM', 'SMA_200_RATIO']
     has_ta_features = all(col in df.columns for col in ta_columns)
@@ -73,25 +131,25 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
     has_macro = all(c in df.columns for c in MACRO_COLS)
     
     if has_ta_features:
-        print("  ✓ Technical Analysis features detected (RSI, MACD, BBW, ATR, SMA Ratio)")
+        print("  [OK] Technical Analysis features detected (RSI, MACD, BBW, ATR, SMA Ratio)")
     else:
-        print("  ⚠ Technical Analysis features not found. Calculating basic features only.")
+        print("  [!!] Technical Analysis features not found. Calculating basic features only.")
         print("     For best results, use crypto_deep_v2.parquet (run scripts/12_enrich_data.py)")
-    
+
     if has_correlation:
-        print("  ✓ Correlation feature detected (corr_btc - rolling correlation to BTC)")
+        print("  [OK] Correlation feature detected (corr_btc - rolling correlation to BTC)")
     else:
-        print("  ⚠ Correlation feature not found. Run scripts/12_enrich_data.py to add it.")
-    
+        print("  [!!] Correlation feature not found. Run scripts/12_enrich_data.py to add it.")
+
     if has_garch:
-        print("  ✓ GARCH volatility feature detected (predictive risk - Phase 6)")
+        print("  [OK] GARCH volatility feature detected (predictive risk - Phase 6)")
     else:
-        print("  ⚠ GARCH volatility not found. Run scripts/12_enrich_data.py to add it.")
+        print("  [!!] GARCH volatility not found. Run scripts/12_enrich_data.py to add it.")
 
     if has_macro:
-        print("  ✓ Macro features detected (VIX, DXY, TNX, macro_trend_score)")
+        print("  [OK] Macro features detected (VIX, DXY, TNX, macro_trend_score)")
     else:
-        print("  ⚠ Macro features not found (vix/dxy/tnx/macro_trend_score). Run scripts/16_fill_macro_features.py.")
+        print("  [!!] Macro features not found (vix/dxy/tnx/macro_trend_score). Run scripts/16_fill_macro_features.py.")
     
     # Get unique assets and timestamps
     asset_list = sorted(df['ticker'].unique().tolist())
@@ -114,12 +172,12 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
             for i, ts in enumerate(timestamps):
                 if ts in btc_returns.index:
                     benchmark_returns[i] = float(btc_returns[ts])
-            print(f"  ✓ Benchmark returns extracted: BTC/USD ({benchmark_returns.shape})")
+            print(f"  [OK] Benchmark returns extracted: BTC/USD ({benchmark_returns.shape})")
         else:
-            print(f"  ⚠ Warning: BTC data not found, DIR will use zero benchmark")
+            print(f"  [!!] Warning: BTC data not found, DIR will use zero benchmark")
             benchmark_returns = np.zeros(n_steps, dtype=np.float32)
     else:
-        print(f"  ⚠ Warning: BTC not in asset list, DIR will use zero benchmark")
+        print(f"  [!!] Warning: BTC not in asset list, DIR will use zero benchmark")
         benchmark_returns = np.zeros(n_steps, dtype=np.float32)
     
     print("  Calculating features using vectorized operations...")
@@ -133,13 +191,9 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
 
     # ── Multi-timeframe cumulative returns (Problem 1 fix) ─────────────────
     # pct_change(N) = (price[t] / price[t-N]) - 1  →  cumulative return over N bars
-    # 4h  = 16 bars × 15 min   |  1d = 96 bars  |  7d = 672 bars
+    # Window sizes are scaled to the bar frequency (mtf_windows computed above).
     # Normalised with tanh so large moves are compressed: ±scale → ±0.76
-    for window, col, scale in [
-        (16,  'ret_4h', 0.02),   # 4h: ±2% typical swing
-        (96,  'ret_1d', 0.05),   # 1d: ±5% typical
-        (672, 'ret_7d', 0.15),   # 7d: ±15% typical
-    ]:
+    for window, col, scale in mtf_windows:
         raw = df.groupby('ticker')['close'].pct_change(periods=window).fillna(0.0)
         df[col + '_norm'] = np.tanh(raw / scale).astype(np.float32)
 
@@ -150,8 +204,9 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
     
     # Normalize commit_count per asset (vectorized)
     # Group by ticker, calculate min/max, then normalize
-    commit_min = df.groupby('ticker')['commit_count_4_weeks'].transform('min')
-    commit_max = df.groupby('ticker')['commit_count_4_weeks'].transform('max')
+    if fit_end is not None:
+        print(f"  [HOLDOUT] min-max normalization ranges fitted on rows up to {fit_end} only")
+    commit_min, commit_max = _fit_range(df, 'commit_count_4_weeks', fit_end)
     commit_range = commit_max - commit_min
     df['commit_count_norm'] = np.where(
         commit_range > 0,
@@ -180,8 +235,7 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
         ).fillna(0.5).clip(0.0, 1.0)
         
         # MACD: Normalize per asset (min-max)
-        macd_min = df.groupby('ticker')['MACD'].transform('min')
-        macd_max = df.groupby('ticker')['MACD'].transform('max')
+        macd_min, macd_max = _fit_range(df, 'MACD', fit_end, clip_pct)
         macd_range = macd_max - macd_min
         # Use pandas where() instead of np.where() to keep it as a Series
         df['MACD_norm'] = pd.Series(
@@ -192,10 +246,11 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
             ),
             index=df.index
         ).fillna(0.0)
+        if clip_pct:
+            df['MACD_norm'] = df['MACD_norm'].clip(0.0, 1.0)
         
         # BB_WIDTH: Normalize per asset (min-max)
-        bbw_min = df.groupby('ticker')['BB_WIDTH'].transform('min')
-        bbw_max = df.groupby('ticker')['BB_WIDTH'].transform('max')
+        bbw_min, bbw_max = _fit_range(df, 'BB_WIDTH', fit_end, clip_pct)
         bbw_range = bbw_max - bbw_min
         # Use pandas Series to keep it as a Series for fillna()
         df['BB_WIDTH_norm'] = pd.Series(
@@ -206,6 +261,8 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
             ),
             index=df.index
         ).fillna(0.0)
+        if clip_pct:
+            df['BB_WIDTH_norm'] = df['BB_WIDTH_norm'].clip(0.0, 1.0)
         
         # ATR_NORM: Already normalized, just ensure valid
         df['ATR_NORM'] = df['ATR_NORM'].fillna(0.0).clip(0.0, 1.0)
@@ -218,8 +275,7 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
     # GARCH volatility is already in a reasonable range (typically 0.001-0.1), but normalize per asset
     if has_garch:
         # Normalize GARCH volatility per asset (min-max scaling)
-        garch_min = df.groupby('ticker')['garch_volatility'].transform('min')
-        garch_max = df.groupby('ticker')['garch_volatility'].transform('max')
+        garch_min, garch_max = _fit_range(df, 'garch_volatility', fit_end, clip_pct)
         garch_range = garch_max - garch_min
         df['garch_volatility_norm'] = pd.Series(
             np.where(
@@ -256,7 +312,7 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
 
         # Shape: [n_steps, 4]  (VIX, DXY, TNX, macro_trend_score)
         macro_array = np.stack([vix_norm, dxy_norm, tnx_norm, macro_score], axis=1).astype(np.float32)
-        print(f"  ✓ Macro array built: shape={macro_array.shape}  "
+        print(f"  [OK] Macro array built: shape={macro_array.shape}  "
               f"VIX mean={vix_norm.mean():.2f}  macro_score mean={macro_score.mean():.2f}")
     else:
         macro_array = None
@@ -342,7 +398,9 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
     # Reindex and fill missing values
     # Use ffill (forward fill) to handle gaps, then fill remaining NaNs
     returns_pivot = returns_pivot.reindex(index=common_index, columns=common_columns)
-    returns_pivot = returns_pivot.ffill().fillna(0.0)  # Forward fill then zero
+    # v46: a missing bar has no return (was ffill, which repeated the previous bar's return;
+    # identical for v5, whose pivots have no holes)
+    returns_pivot = returns_pivot.fillna(0.0)
     
     volatility_pivot = volatility_pivot.reindex(index=common_index, columns=common_columns)
     volatility_pivot = volatility_pivot.ffill().fillna(0.0)
@@ -354,7 +412,17 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
     utility_pivot = utility_pivot.ffill().fillna(0.5)
     
     price_pivot = price_pivot.reindex(index=common_index, columns=common_columns)
+    # v46: listing mask. A coin is tradable once it has 20 days of its own price history
+    # (the semicovariance window); a coin present from the first bar is tradable at once,
+    # so a dataset where every coin starts together (v5) gets an all-True mask.
+    _first = price_pivot.notna().values.argmax(axis=0)            # first listed bar per coin
+    _lag = np.where(_first > 0, bars_per_day * 20, 0)
+    avail_array = (np.arange(n_steps)[:, None] >= (_first + _lag)[None, :])
+    for _a, _f in zip(asset_list, _first):
+        if _f > 0:
+            print(f"  [LISTING] {_a}: first bar {timestamps[_f]}, tradable from bar {_f + bars_per_day * 20}")
     price_pivot = price_pivot.ffill().fillna(0.0)
+    _price_listed = price_pivot.where(price_pivot > 0)              # NaN before listing
     
     # Phase 5.5 Sprint 2: Reindex correlation feature if present
     if has_correlation and corr_pivot is not None:
@@ -397,18 +465,40 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
     #   [2] Market 7d return — equal-weight avg of all 14 assets (broad crypto market)
     #   [3] BTC vs SMA200  — structural trend (0=far below, 0.5=at SMA, 1=far above)
     if 'BTC' in price_pivot.columns:
-        btc_1d_ret = price_pivot['BTC'].pct_change(96).fillna(0.0).values
-        btc_7d_ret = price_pivot['BTC'].pct_change(672).fillna(0.0).values
+        btc_1d_ret = price_pivot['BTC'].pct_change(crypto_1d_w).fillna(0.0).values
+        btc_7d_ret = price_pivot['BTC'].pct_change(crypto_7d_w).fillna(0.0).values
     else:
         btc_1d_ret = np.zeros(n_steps, dtype=np.float32)
         btc_7d_ret = np.zeros(n_steps, dtype=np.float32)
 
-    market_7d_ret = price_pivot.pct_change(672).fillna(0.0).mean(axis=1).values
+    # v46: average over listed coins only (price 0 before listing made pct_change inf)
+    market_7d_ret = _price_listed.pct_change(crypto_7d_w, fill_method=None).mean(axis=1).fillna(0.0).values
 
-    if has_ta_features and 'BTC' in sma_ratio_pivot.columns:
-        btc_sma200 = sma_ratio_pivot['BTC'].values.astype(np.float32)
+    # Compute true 200-day SMA ratio from 4h price data (1200 bars = 200 days x 6 bars/day).
+    # The parquet SMA_200_RATIO is a 200-bar 15-min (50-hour) SMA — price rarely deviates from
+    # it, so after normalization it's always ~0.5 (neutral), making sma_sig always ~0 and
+    # rendering direction-lock, C4, C6 all useless. We need the structural 200-DAY trend.
+    # Normalization: clip(price/SMA200d, 0.5, 1.5) → subtract 0.5 → [0, 1], 0.5=at SMA.
+    if 'BTC' in price_pivot.columns:
+        btc_price_4h = price_pivot['BTC']
+        btc_sma200_day = btc_price_4h.rolling(window=1200, min_periods=100).mean().bfill()
+        raw_ratio = (btc_price_4h / btc_sma200_day).clip(0.5, 1.5)
+        btc_sma200 = ((raw_ratio - 0.5) / 1.0).values.astype(np.float32)  # [0,1], 0.5=at SMA
     else:
         btc_sma200 = np.full(n_steps, 0.5, dtype=np.float32)
+
+    # v41: Per-asset 200-day SMA ratio — same normalization as BTC above.
+    # Gives C4/C6 per-asset signals so the model learns cross-sectional allocation:
+    # "SOL above its 200d MA → reward long SOL" vs "BAT below → reward short BAT".
+    # Without this, C6 used one BTC signal for all 14 assets, teaching only macro direction.
+    asset_sma200_cols = []
+    for col in price_pivot.columns:
+        col_price = _price_listed[col]
+        col_sma200 = col_price.rolling(window=1200, min_periods=100).mean().bfill()
+        col_ratio  = (col_price / col_sma200).clip(0.5, 1.5)
+        col_norm   = ((col_ratio - 0.5) / 1.0).fillna(0.5).values.astype(np.float32)
+        asset_sma200_cols.append(col_norm)
+    asset_sma200_array = np.stack(asset_sma200_cols, axis=1)  # (n_steps, n_assets)
 
     crypto_regime_array = np.stack([
         np.tanh(btc_1d_ret   / 0.05).astype(np.float32),   # BTC 1d
@@ -416,7 +506,7 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
         np.tanh(market_7d_ret/ 0.15).astype(np.float32),   # Market 7d
         np.clip(btc_sma200, 0.0, 1.0),                      # BTC vs SMA200
     ], axis=1)
-    print(f"  ✓ Crypto regime array: shape={crypto_regime_array.shape}  "
+    print(f"  [OK] Crypto regime array: shape={crypto_regime_array.shape}  "
           f"BTC_7d mean={crypto_regime_array[:,1].mean():.3f}  "
           f"btc_sma200 mean={crypto_regime_array[:,3].mean():.3f}")
 
@@ -518,6 +608,12 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
         # Create dummy array for backward compatibility (won't be used)
         np.save(str(garch_path), np.full((n_steps, n_assets), 0.5, dtype=np.float32))
     
+    # v41: Per-asset 200-day SMA ratio array (always saved — required for C4/C6)
+    asset_sma200_path = temp_dir / "asset_sma200_array.npy"
+    np.save(str(asset_sma200_path), asset_sma200_array)
+    avail_path = temp_dir / "avail_array.npy"
+    np.save(str(avail_path), avail_array)
+
     # Save TA arrays if present
     if has_ta_features:
         rsi_path = temp_dir / "rsi_array.npy"
@@ -525,7 +621,7 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
         bbw_path = temp_dir / "bbw_array.npy"
         atr_path = temp_dir / "atr_array.npy"
         sma_ratio_path = temp_dir / "sma_ratio_array.npy"
-        
+
         np.save(str(rsi_path), rsi_array)
         np.save(str(macd_path), macd_array)
         np.save(str(bbw_path), bbw_array)
@@ -554,7 +650,7 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
         )
     total_mb = total_bytes / (1024 * 1024)
     
-    print(f"✅ Data optimized and saved. Shape: [{n_steps}, {n_assets}]. Size: {total_mb:.2f} MB")
+    print(f"[OK] Data optimized and saved. Shape: [{n_steps}, {n_assets}]. Size: {total_mb:.2f} MB")
     print(f"   Files saved to: {temp_dir}")
     
     # Build return dictionary with all paths and metadata
@@ -582,6 +678,12 @@ def prepare_training_data(data_path: Path, temp_dir: Path) -> Dict:
         'ret_1d_path': str(ret_1d_path),
         'ret_7d_path': str(ret_7d_path),
         'crypto_regime_path': str(crypto_regime_path),
+        # v27: bar frequency metadata consumed by fast_env for rate/cooldown scaling
+        'bars_per_day': bars_per_day,
+        # v41: per-asset 200-day SMA ratio for C4/C6 cross-sectional signals
+        'asset_sma200_path': str(asset_sma200_path),
+        # v46: [n_steps, n_assets] bool, True once a coin is listed and tradable
+        'avail_path': str(avail_path),
     }
 
     # Add TA paths if present

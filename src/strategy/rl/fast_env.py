@@ -102,6 +102,7 @@ class FastCryptoEnv(gym.Env):
         self.reward_loss_window = 42          # bars in the loss-aversion window (42 x 4h = 7 days)
         self._ret_hist = deque(maxlen=42)
         self._last_components = None
+        self.obs_coin_trend = False           # v49: add each coin's own 200-day trend to the observation
 
         # Use memory-mapped files if provided, otherwise load from parquet
         if data_config is not None:
@@ -177,6 +178,10 @@ class FastCryptoEnv(gym.Env):
             self.reward_loss_aversion = float(data_config.get('reward_loss_aversion', 1.35))
             self.reward_loss_window = int(data_config.get('reward_loss_window', 42))
             self._ret_hist = deque(maxlen=self.reward_loss_window)
+            # v49: each coin's own 200-day trend (loader array: clip(price/SMA200d, 0.5, 1.5) - 0.5, 0.5 = at SMA)
+            self.obs_coin_trend = bool(data_config.get('obs_coin_trend', False))
+            if self.obs_coin_trend or self.reward_mode in ('coin_trend', 'market_coin', 'market_coin_rel'):
+                self.asset_trend_array = np.load(data_config['asset_sma200_path'], mmap_mode='r')
             # v46: listing mask (coins not yet listed get no weight and no C4/C6 credit) and
             # episode warm-up length; without an avail array every coin counts as listed.
             self.avail_array = (np.load(data_config['avail_path'], mmap_mode='r')
@@ -357,6 +362,8 @@ class FastCryptoEnv(gym.Env):
 
         n_time_features = 6  # hour_sin/cos, dow_sin/cos, month_sin/cos
         n_obs_features = (self.n_assets * n_features_per_asset) + 2 + n_macro_features + n_crypto_regime_features + n_position_features + n_time_features
+        if getattr(self, 'obs_coin_trend', False):
+            n_obs_features += self.n_assets   # v49: per-coin 200-day trend
 
         self.n_features_per_asset = n_features_per_asset  # stored for obs construction
 
@@ -377,6 +384,8 @@ class FastCryptoEnv(gym.Env):
         if has_crypto_regime:  global_info.append("crypto_regime*4")
         global_info.append(f"positions*{self.n_assets}")
         global_info.append("time*6")
+        if getattr(self, 'obs_coin_trend', False):
+            global_info.append(f"coin_trend*{self.n_assets}")
         global_str = " + " + " + ".join(global_info) if global_info else ""
         print(f"  [OK] Observation space: {n_obs_features} features "
               f"({base_features_per_asset} base{feature_info} + {ta_features_per_asset} TA per asset{global_str})"
@@ -632,6 +641,76 @@ class FastCryptoEnv(gym.Env):
             if abs(s) > self.reward_trend_min:
                 w = np.asarray(self.current_weights[:self.n_assets], dtype=np.float64)
                 c6 = self.reward_trend_coef * abs(s) * float(np.mean((w * np.sign(s))[av]))
+        return c1 + c2 + c4 + c6, {"C1": c1, "C2": c2, "C4": c4, "C6": c6}
+
+    def _reward_coin_trend(self, r: float, drawdown: float, alpha: np.ndarray, av: np.ndarray):
+        """v49 reward: the v40 reward with C4/C6 measured against EACH COIN'S OWN 200-day trend.
+
+        C1 = r, or 1.35*r if r < 0 and drawdown > 0.5%        (unchanged from v40)
+        C2 = -0.005 * drawdown                                 (unchanged)
+        C4 = 0.005 * mean_listed(|s_i| * alpha_i * d_i)        (v40: BTC's |s| and d for every coin)
+        C6 = 2.0   * mean_listed(|s_i| * w_i * d_i)            (v40: 2.0 * |s_BTC| * mean(w * d_BTC))
+        s_i = coin i's price / its 200-day SMA - 1 (clipped to +-0.5); d_i = sign(s_i) if |s_i| > 0.025, else 0.
+        With s_i = s_BTC for every coin this equals the v40 reward exactly.
+        """
+        c1 = r * 1.35 if (r < 0.0 and drawdown > 0.005) else r
+        c2 = -drawdown * 0.005
+        t = min(self.current_step, len(self.asset_trend_array) - 1)
+        s = np.asarray(self.asset_trend_array[t], dtype=np.float64) - 0.5
+        d = np.where(np.abs(s) > 0.025, np.sign(s), 0.0)
+        w = np.asarray(self.current_weights[:self.n_assets], dtype=np.float64)
+        c4 = 0.005 * float(np.mean((np.abs(s) * alpha * d)[av]))
+        c6 = 2.0 * float(np.mean((np.abs(s) * w * d)[av]))
+        return c1 + c2 + c4 + c6, {"C1": c1, "C2": c2, "C4": c4, "C6": c6}
+
+    def _reward_market_coin(self, r: float, drawdown: float, alpha: np.ndarray, av: np.ndarray, relative: bool = False):
+        """v50 reward: BTC's 200-day trend sets the DIRECTION, each coin's own trend sets WHICH coins.
+
+        v49 lesson: rewarding shorts on every coin below its own trend shorted laggards in bull markets,
+        which still rose with the market (2021/2023/2024 short P&L -23 to -62 pp).
+        Per listed coin i, with D = sign(s_BTC) (0 within +-2.5% of BTC's SMA) and d_i = sign(s_i):
+          own trend agrees with the market (d_i == D):  |s_i| * x_i * D      (reward/penalty, coin-weighted)
+          own trend disagrees:                          |s_BTC| * min(0, x_i * D)
+                                                        (only positions AGAINST the market are penalised;
+                                                         holding a laggard with the market earns nothing)
+          no 200-day history yet (s_i == 0):             |s_BTC| * x_i * D     (as v40)
+        C6 = 2.0 * mean_listed(.) with x = weights; C4 = 0.005 * mean_listed(.) with x = Brain 1 signals.
+        C1, C2 as v40. With s_i = s_BTC for every coin this equals the v40 reward exactly.
+
+        relative=True (v51, 'market_coin_rel'): v50 tilted bearish (coins' own downtrends are deeper than
+        BTC's, so bear bars paid ~1.5x) and dropped profitable laggard longs in bull markets (0 pay).
+        Positions WITH the market are now paid at
+            pay_i = clip(|s_BTC| + rel_i, 0.5*|s_BTC|, 2*|s_BTC|),  rel_i = D*s_i - mean_j(D*s_j)
+        (no-history coins: |s_BTC|), so a bar pays at BTC's level in total while coins are ranked by
+        their own trend, and laggards held with the market keep at least half the base pay.
+        Positions AGAINST the market are penalised exactly as in v50.
+        """
+        c1 = r * 1.35 if (r < 0.0 and drawdown > 0.005) else r
+        c2 = -drawdown * 0.005
+        c4 = c6 = 0.0
+        t = min(self.current_step, len(self.crypto_regime_array) - 1)
+        sb = float(self.crypto_regime_array[t, 3]) - 0.5
+        if abs(sb) > 0.025:
+            D = float(np.sign(sb))
+            s = np.asarray(self.asset_trend_array[min(t, len(self.asset_trend_array) - 1)], dtype=np.float64) - 0.5
+            d = np.where(np.abs(s) > 0.025, np.sign(s), 0.0)
+            no_hist = (s == 0.0)
+            agree = (d == D) & ~no_hist
+            if relative:
+                hist_av = av & ~no_hist
+                rel = D * s - (float(np.mean((D * s)[hist_av])) if hist_av.any() else 0.0)
+                pay = np.where(no_hist, abs(sb), np.clip(abs(sb) + rel, 0.5 * abs(sb), 2.0 * abs(sb)))
+            def term(x):
+                xd = x * D
+                if relative:
+                    v = pay * np.maximum(xd, 0.0) + np.where(agree, np.abs(s), abs(sb)) * np.minimum(xd, 0.0)
+                else:
+                    v = np.where(agree, np.abs(s) * xd, abs(sb) * np.minimum(xd, 0.0))
+                    v = np.where(no_hist, abs(sb) * xd, v)
+                return float(np.mean(v[av]))
+            w = np.asarray(self.current_weights[:self.n_assets], dtype=np.float64)
+            c4 = 0.005 * term(np.asarray(alpha, dtype=np.float64))
+            c6 = 2.0 * term(w)
         return c1 + c2 + c4 + c6, {"C1": c1, "C2": c2, "C4": c4, "C6": c6}
 
     def _avail(self, t=None) -> np.ndarray:
@@ -891,6 +970,11 @@ class FastCryptoEnv(gym.Env):
         # v38: Cyclical time features (hour_sin/cos, dow_sin/cos, month_sin/cos)
         obs[idx:idx + 6] = self.time_array[self.current_step]
         idx += 6
+
+        # v49: each coin's own 200-day trend, centred (0 = at its SMA, -0.5 = 50%+ below, +0.5 = 50%+ above)
+        if getattr(self, 'obs_coin_trend', False):
+            obs[idx:idx + self.n_assets] = np.asarray(self.asset_trend_array[self.current_step], dtype=np.float32) - 0.5
+            idx += self.n_assets
 
         return obs
     
@@ -1193,6 +1277,12 @@ class FastCryptoEnv(gym.Env):
         self._ret_hist.append(r)
         if getattr(self, 'reward_mode', 'v40') == 'profit':
             reward, self._last_components = self._reward_profit(r, current_drawdown, action_signals, _av)
+        elif getattr(self, 'reward_mode', 'v40') == 'coin_trend':
+            reward, self._last_components = self._reward_coin_trend(r, current_drawdown, action_signals, _av)
+        elif getattr(self, 'reward_mode', 'v40') == 'market_coin':
+            reward, self._last_components = self._reward_market_coin(r, current_drawdown, action_signals, _av)
+        elif getattr(self, 'reward_mode', 'v40') == 'market_coin_rel':
+            reward, self._last_components = self._reward_market_coin(r, current_drawdown, action_signals, _av, relative=True)
 
         # Keep benchmark return for logging (no longer used in reward)
         if self.benchmark_returns is not None and self.current_step < len(self.benchmark_returns):

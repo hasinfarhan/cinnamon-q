@@ -145,7 +145,8 @@ def main():
         "calmar_release_inference_only": os.environ.get("CQ_B_INFERENCE_ONLY", "0") == "1",  # v45 (5)
         "warmup_bars":           int(os.environ.get("CQ_WARMUP", "200")),                  # v46: episode start >= this bar
         "calmar_trend_reentry":  os.environ.get("CQ_TREND_REENTRY", "0") == "1",            # v47 (G), evaluation only
-        "reward_mode":           os.environ.get("CQ_REWARD_MODE", "v40"),                    # v47: 'profit' = profit-led reward
+        "reward_mode":           os.environ.get("CQ_REWARD_MODE", "v40"),                    # v47 'profit' / v49 'coin_trend'
+        "obs_coin_trend":        os.environ.get("CQ_OBS_COIN_TREND", "0") == "1",           # v49: per-coin 200-day trend input
         "reward_K":              float(os.environ.get("CQ_REWARD_K", "10")),
         "reward_trend_coef":     float(os.environ.get("CQ_REWARD_TREND_COEF", "0.05")),
         "reward_dd_coef":        float(os.environ.get("CQ_REWARD_DD_COEF", "0.005")),
@@ -157,6 +158,10 @@ def main():
     # v46: loader options (recorded in holdout.json so evaluation preprocesses identically)
     LOADER_OPTIONS = {"clip_pct": float(os.environ["CQ_CLIP_PCT"]) if os.environ.get("CQ_CLIP_PCT") else None}
     LOG_STD_INIT = os.environ.get("CQ_LOG_STD_INIT")  # v45: initial exploration noise (None = default 0.0)
+    # v48: fine-tune an existing model instead of starting from random weights
+    INIT_FROM = Path(os.environ["CQ_INIT_FROM"]) if os.environ.get("CQ_INIT_FROM") else None
+    LEARNING_RATE = float(os.environ.get("CQ_LR", "3e-5"))
+    CRITIC_WARMUP = int(os.environ.get("CQ_CRITIC_WARMUP", "0"))   # steps with Brain 1 frozen (critic adapts first)
 
     if v43_data_path.exists():
         data_path = v43_data_path
@@ -343,6 +348,8 @@ def main():
             "n_steps_full": int(full_n), "split_at": int(split_at),
             "data_file": data_path.name, "seed": RUN_SEED, "total_steps": TOTAL_STEPS,
             "env_options": ENV_OPTIONS, "log_std_init": LOG_STD_INIT, "loader_options": LOADER_OPTIONS,
+            "init_from": str(INIT_FROM) if INIT_FROM else None, "learning_rate": LEARNING_RATE,
+            "critic_warmup": CRITIC_WARMUP,
         }, indent=2))
 
     # --- PARALLELIZATION CONFIG ---
@@ -398,7 +405,15 @@ def main():
         clip_obs=10.0,
         training=True
     )
-    
+    if INIT_FROM is not None:
+        # v48: keep the source model's observation statistics (its inputs must look the same to it);
+        # reward statistics start fresh because the reward formula may have changed.
+        from stable_baselines3.common.running_mean_std import RunningMeanStd
+        env = VecNormalize.load(str(INIT_FROM / "vec_normalize.pkl"), env.venv)
+        env.training, env.norm_reward = True, True
+        env.ret_rms = RunningMeanStd(shape=())
+        print(f"  [INIT] observation statistics loaded from {INIT_FROM.name}; reward statistics reset")
+
     init_time = time.time() - start_init
     print(f"[DONE] Environments ready in {init_time:.2f}s")
     print(f"   (Total startup time: {data_load_time + init_time:.2f}s)")
@@ -543,6 +558,32 @@ def main():
                 verbose=1,
                 tensorboard_log=str(tensorboard_dir) if _check_tensorboard() else None
             )
+        elif INIT_FROM is not None:
+            # v48: start from the source model's trained weights; same architecture and
+            # hyperparameters, learning rate set by CQ_LR.
+            # torch.load cannot stream from SB3's zip member on this setup; read it into memory first
+            # (same workaround as 11_backtest.py / _diag_*.py).
+            import io as _io
+            if not getattr(torch.load, "_bytesio_patched", False):
+                _orig_load = torch.load
+                def _load_bytes(f, *a, **kw):
+                    if not isinstance(f, (str, bytes, _io.BytesIO)) and hasattr(f, "read"):
+                        f = _io.BytesIO(f.read())
+                    return _orig_load(f, *a, **kw)
+                _load_bytes._bytesio_patched = True
+                torch.load = _load_bytes
+            model = RecurrentPPO.load(
+                str(INIT_FROM / "final_model.zip"),
+                env=env,
+                device=device,
+                verbose=1,
+                custom_objects={"learning_rate": LEARNING_RATE, "lr_schedule": lambda _: LEARNING_RATE},
+                tensorboard_log=str(tensorboard_dir) if _check_tensorboard() else None
+            )
+            model.set_random_seed(RUN_SEED)
+            assert model.observation_space.shape == env.observation_space.shape, "source model obs shape differs"
+            print(f"  [INIT] weights loaded from {INIT_FROM / 'final_model.zip'} "
+                  f"(trained {model.num_timesteps:,} steps); lr={LEARNING_RATE}")
         else:
             model = RecurrentPPO(
                 "MlpLstmPolicy",  # LSTM policy with memory
@@ -608,12 +649,31 @@ def main():
             print("  [!!] Progress bar disabled (rich not installed)")
         
         resuming = bool(_ckpts)
-        model.learn(
-            total_timesteps=total_timesteps if not resuming else (total_timesteps - _ckpt_steps(_ckpts[-1])),
-            callback=[checkpoint_callback],
-            progress_bar=use_progress_bar,
-            reset_num_timesteps=not resuming
-        )
+        if INIT_FROM is not None and not resuming:
+            # v48: step counter continues from the source model (checkpoints are named by total
+            # steps); TOTAL_STEPS is the number of ADDITIONAL steps.
+            actor = [model.policy.lstm_actor, model.policy.mlp_extractor.policy_net, model.policy.action_net]
+            def _set_actor_trainable(on: bool):
+                for mod in actor:
+                    for p_ in mod.parameters():
+                        p_.requires_grad_(on)
+                model.policy.log_std.requires_grad_(on)
+            if CRITIC_WARMUP > 0:
+                _set_actor_trainable(False)
+                print(f"  [INIT] critic warm-up: {CRITIC_WARMUP:,} steps with Brain 1 frozen")
+                model.learn(total_timesteps=CRITIC_WARMUP, callback=[checkpoint_callback],
+                            progress_bar=use_progress_bar, reset_num_timesteps=False)
+                _set_actor_trainable(True)
+                print("  [INIT] Brain 1 unfrozen")
+            model.learn(total_timesteps=total_timesteps - CRITIC_WARMUP, callback=[checkpoint_callback],
+                        progress_bar=use_progress_bar, reset_num_timesteps=False)
+        else:
+            model.learn(
+                total_timesteps=total_timesteps if not resuming else (total_timesteps - _ckpt_steps(_ckpts[-1])),
+                callback=[checkpoint_callback],
+                progress_bar=use_progress_bar,
+                reset_num_timesteps=not resuming
+            )
         print()
         print("[OK] Training completed successfully!")
         print()

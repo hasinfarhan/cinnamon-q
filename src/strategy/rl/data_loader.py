@@ -494,7 +494,9 @@ def prepare_training_data(data_path: Path, temp_dir: Path, resample_freq: Option
     asset_sma200_cols = []
     for col in price_pivot.columns:
         col_price = _price_listed[col]
-        col_sma200 = col_price.rolling(window=1200, min_periods=100).mean().bfill()
+        # v49: a true 200-day average (full 1,200 bars), no back-fill (bfill copied later SMA values
+        # into earlier bars); until a coin has 200 days of history its trend reads neutral (0.5)
+        col_sma200 = col_price.rolling(window=1200, min_periods=1200).mean()
         col_ratio  = (col_price / col_sma200).clip(0.5, 1.5)
         col_norm   = ((col_ratio - 0.5) / 1.0).fillna(0.5).values.astype(np.float32)
         asset_sma200_cols.append(col_norm)

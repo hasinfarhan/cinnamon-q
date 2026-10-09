@@ -40,7 +40,7 @@ HOLDOUT = json.loads((MODEL_DIR / "holdout.json").read_text()) if (MODEL_DIR / "
 FIT_END = HOLDOUT["train_end"] if HOLDOUT else None
 N = 14
 
-model = RecurrentPPO.load(str(MODEL_DIR / "final_model.zip"), device="cpu")
+model = RecurrentPPO.load(str(MODEL_DIR / os.environ.get("CQ_MODEL_FILE", "final_model.zip")), device="cpu")   # v48: checkpoint choice
 obs_shape, act_shape = model.observation_space.shape, model.action_space.shape
 class _Shape(gym.Env):
     def __init__(self):

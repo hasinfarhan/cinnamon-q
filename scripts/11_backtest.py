@@ -64,7 +64,7 @@ from strategy.rl.fast_env import FastCryptoEnv
 # v43: paths are overridable via environment variables so the same script can
 # reproduce v40 and evaluate v43 from a separate worktree. Defaults are v40's.
 MODEL_DIR     = Path(os.environ.get("CQ_MODEL_DIR", project_root / "models" / "hdrl_worldclass_v40"))
-MODEL_PATH    = MODEL_DIR / "final_model.zip"
+MODEL_PATH    = MODEL_DIR / os.environ.get("CQ_MODEL_FILE", "final_model.zip")   # v48: a checkpoint can be chosen
 VECNORM_PATH  = MODEL_DIR / "vec_normalize.pkl"
 _v5 = project_root / "data" / "processed" / "crypto_deep_v5.parquet"
 DATA_PATH     = Path(os.environ.get("CQ_DATA_PATH",
@@ -186,6 +186,8 @@ try:
         "ret_1d_path"        : _slice_and_save(data_cfg["ret_1d_path"],        "ret_1d_array.npy")        if data_cfg.get("has_mtf") else "",
         "ret_7d_path"        : _slice_and_save(data_cfg["ret_7d_path"],        "ret_7d_array.npy")        if data_cfg.get("has_mtf") else "",
         "crypto_regime_path" : _slice_and_save(data_cfg["crypto_regime_path"], "crypto_regime_array.npy") if data_cfg.get("has_mtf") else "",
+        # v49: per-coin 200-day trend (observation input / coin_trend reward diagnostics)
+        "asset_sma200_path"  : _slice_and_save(data_cfg["asset_sma200_path"], "asset_sma200_array.npy") if data_cfg.get("asset_sma200_path") else "",
         # v46: listing mask must be cut to the same window (else every coin counts as listed)
         "avail_path"         : _slice_and_save(data_cfg["avail_path"], "avail_array.npy") if data_cfg.get("avail_path") else "",
         # v26: Gate 3 (Regime Uncertainty Gate) is inference-only — activate it here

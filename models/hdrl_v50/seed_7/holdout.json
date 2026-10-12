@@ -1,0 +1,34 @@
+{
+  "train_end": "2025-06-24 20:00:00",
+  "test_start": "2025-06-25 00:00:00",
+  "n_steps_full": 19388,
+  "split_at": 17197,
+  "data_file": "crypto_deep_v6.parquet",
+  "seed": 7,
+  "total_steps": 1300000,
+  "env_options": {
+    "no_trade_band": 0.01,
+    "calmar_regime_release": true,
+    "squash_actions": true,
+    "sign_preserving_sizing": true,
+    "calmar_release_inference_only": true,
+    "warmup_bars": 1200,
+    "calmar_trend_reentry": true,
+    "reward_mode": "market_coin",
+    "obs_coin_trend": true,
+    "reward_K": 10.0,
+    "reward_trend_coef": 0.05,
+    "reward_dd_coef": 0.005,
+    "reward_c4_coef": 0.0,
+    "reward_trend_min": 0.1,
+    "reward_loss_aversion": 1.35,
+    "reward_loss_window": 42
+  },
+  "log_std_init": "-1.0",
+  "loader_options": {
+    "clip_pct": 0.5
+  },
+  "init_from": null,
+  "learning_rate": 3e-05,
+  "critic_warmup": 0
+}

@@ -2,12 +2,16 @@
 
 v50 is a leak-free model trained on Binance v6 data. Brain 1 sees each coin's own 200-day trend, and the reward makes **BTC's trend decide the direction** while **each coin's own trend decides which coins**. It is the first leak-free model that takes real, sized shorts in bear markets.
 
-## Files (binaries are git-ignored; they live in the main checkout's `models/`)
+## Files
+
+**Seed 7 is the final model** (higher training-period Sharpe); seed 42 is the robustness check. Both are committed in this folder: `seed_7/` and `seed_42/`, each with `final_model.zip`, `vec_normalize.pkl` and `holdout.json`. The intermediate checkpoints remain only in the main checkout's `models/hdrl_v50_s7/` and `models/hdrl_v50_s42/`.
 
 | Seed | Directory | `final_model.zip` SHA-256 | `vec_normalize.pkl` SHA-256 |
 |---|---|---|---|
-| 42 | `models/hdrl_v50_s42/` | `caf91f5eed9ad57e10119786b0ea1ed315dbb7ca98181546a9f841799fdd9040` (3,406,542 B) | `7afb130e85ec9788b88d9aeacefea8e1d7360ebcc2378ff27dbee1d666d328d6` |
-| 7 | `models/hdrl_v50_s7/` | `76488832d6499e682e1d13a383b26e2d3e0ed68f9e750a71f09fd9d36308999b` (3,406,540 B) | `7f7a08806b71fce67bfa412d05e5031f621c5eaee71a2d7c35ad90db1f18806d` |
+| **7 (final)** | `models/hdrl_v50/seed_7/` | `76488832d6499e682e1d13a383b26e2d3e0ed68f9e750a71f09fd9d36308999b` (3,406,540 B) | `7f7a08806b71fce67bfa412d05e5031f621c5eaee71a2d7c35ad90db1f18806d` |
+| 42 | `models/hdrl_v50/seed_42/` | `caf91f5eed9ad57e10119786b0ea1ed315dbb7ca98181546a9f841799fdd9040` (3,406,542 B) | `7afb130e85ec9788b88d9aeacefea8e1d7360ebcc2378ff27dbee1d666d328d6` |
+
+To evaluate a committed model, point `CQ_MODEL_DIR` at its folder, e.g. `CQ_MODEL_DIR=models/hdrl_v50/seed_7`.
 
 The recorded training settings are in `holdout_s42.json` and `holdout_s7.json`, next to this card. The data is the same as for v46+G (`crypto_deep_v6.parquet`, SHA-256 `017d5ec0…6fceb`; see `models/hdrl_v46G/MODEL_CARD.md`).
 

@@ -1,0 +1,4 @@
+Strategy,Total Return (%),Ann. Return (%),Sharpe Ratio,Sortino Ratio,Max Drawdown (%),Calmar Ratio,Win Rate (%),Final Value ($)
+v50 (ours),30.44,30.47,1.242,1.788,-16.97,1.795,48.4,130444.12
+Buy-and-Hold BTC,-42.77,-42.79,-1.138,-1.539,-52.19,-0.82,49.9,57232.59
+Equal-Weight (14 assets),-54.81,-54.84,-0.924,-1.232,-70.69,-0.776,50.3,45186.6

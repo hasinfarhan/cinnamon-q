@@ -1,0 +1,10 @@
+Test window : 2025-06-25 00:00:00 -> 2026-06-25 00:00:00 (2,190 four-hour returns)
+Model       : models/v50/seed_42, trained on data up to 2025-06-24 20:00:00 (seed 42)
+Data        : crypto_deep_v6.parquet
+Benchmarks  : before transaction costs; the model pays 0.1% per unit of turnover and 3% p.a. on short positions
+
+                          Total Return (%)  Ann. Return (%)  Sharpe Ratio  Sortino Ratio  Max Drawdown (%)  Calmar Ratio  Win Rate (%)  Final Value ($)
+Strategy                                                                                                                                               
+v50 (ours)                           17.45            17.46         0.778          1.117            -22.56         0.774          47.5        117450.35
+Buy-and-Hold BTC                    -42.77           -42.79        -1.138         -1.539            -52.19        -0.820          49.9         57232.59
+Equal-Weight (14 assets)            -54.81           -54.84        -0.924         -1.232            -70.69        -0.776          50.3         45186.60

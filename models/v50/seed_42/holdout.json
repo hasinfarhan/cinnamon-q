@@ -1,0 +1,24 @@
+{
+  "train_end": "2025-06-24 20:00:00",
+  "test_start": "2025-06-25 00:00:00",
+  "n_steps_full": 19388,
+  "split_at": 17197,
+  "data_file": "crypto_deep_v6.parquet",
+  "clip_pct": 0.5,
+  "seed": 42,
+  "total_steps": 1300000,
+  "hyperparameters": {
+    "learning_rate": 3e-05,
+    "n_steps": 512,
+    "batch_size": 512,
+    "n_epochs": 4,
+    "gamma": 0.99,
+    "gae_lambda": 0.95,
+    "clip_range": 0.2,
+    "ent_coef": 0.015,
+    "vf_coef": 0.5,
+    "max_grad_norm": 0.5,
+    "log_std_init": -1.0,
+    "n_envs": 4
+  }
+}

@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+data/
+logs/
+models/*/ckpt_*.zip
+models/v50_s*/
